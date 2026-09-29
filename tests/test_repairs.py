@@ -504,7 +504,10 @@ class TestRemainingRepairsRegression(unittest.TestCase):
             shutil.rmtree(m_dir, ignore_errors=True)
 
     def test_streamlit_apptest_zero_exceptions(self):
-        at = AppTest.from_file(str(PROJECT_ROOT / "app.py"))
+        entry_script = PROJECT_ROOT / "app.py"
+        if not entry_script.exists():
+            entry_script = PROJECT_ROOT / "b.py"
+        at = AppTest.from_file(str(entry_script))
         at.run(timeout=30)
         self.assertFalse(at.exception, [str(x.value) for x in at.exception])
 
