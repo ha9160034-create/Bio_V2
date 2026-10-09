@@ -75,13 +75,21 @@ def prepare_receptor(
     write_file(mol, clean_pdbqt_path, "pdbqt", rigid_receptor=True)
 
     # 5. Sanitize rigid receptor PDBQT to strictly remove ROOT/BRANCH/TORSDOF tags
+    # and fix erroneous atom types produced by OpenBabel (e.g. Heme CMA/CMB/CMC/CMD assigned as 'Cm' (Curium))
     lines = []
     with open(clean_pdbqt_path, "r", encoding="utf-8") as f:
         for line in f:
-            if not (line.startswith("ROOT") or line.startswith("ENDROOT") or
-                    line.startswith("BRANCH") or line.startswith("ENDBRANCH") or
-                    line.startswith("TORSDOF")):
-                lines.append(line)
+            if line.startswith(("ROOT", "ENDROOT", "BRANCH", "ENDBRANCH", "TORSDOF")):
+                continue
+            if line.startswith(("ATOM  ", "HETATM")):
+                line_stripped = line.rstrip("\r\n")
+                # Fix OpenBabel erroneously assigning 'Cm' (Curium) to heme methyl carbons
+                if line_stripped.endswith("Cm"):
+                    line = line_stripped[:-2] + " C\n"
+                # Fix OpenBabel erroneously assigning 'Ca' (Calcium) to heme carbons in UNL / HEM
+                elif line_stripped.endswith("Ca") and ("UNL" in line_stripped or "HEM" in line_stripped):
+                    line = line_stripped[:-2] + " C\n"
+            lines.append(line)
     with open(clean_pdbqt_path, "w", encoding="utf-8") as f:
         f.writelines(lines)
 
