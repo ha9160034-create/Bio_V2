@@ -360,7 +360,7 @@ def render_md_tab():
     with col_sim2:
         press_bar = st.number_input("الضغط (bar):", value=1.0, step=0.1)
     with col_sim3:
-        prod_ns = st.slider("مدة محاكاة الإنتاج (ns):", 0.01, 10.0, 1.0, 0.01)
+        prod_ns = st.slider("مدة محاكاة الإنتاج (ns):", 0.01, 10.0, 0.5, 0.01)
 
     col_nve1, col_nve2 = st.columns([1.0, 1.0])
     with col_nve1:

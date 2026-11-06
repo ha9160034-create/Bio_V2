@@ -606,7 +606,7 @@ class BiophysicalMDSimulator:
 
     def _mdrun(self, deffnm: str, stage_label: str) -> None:
         # Production MD may legitimately take hours: no timeout by default.
-        self._gmx(["mdrun", "-v", "-deffnm", deffnm], log_name=f"mdrun_{deffnm}", timeout=None)
+        self._gmx(["mdrun", "-deffnm", deffnm], log_name=f"mdrun_{deffnm}", timeout=None)
 
     def _stage_topology(self, topology: TopologyResult) -> TopologyResult:
         """Copy topology inputs into the run directory (self-contained run)."""
