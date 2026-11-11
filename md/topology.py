@@ -1136,18 +1136,13 @@ def parameterize_ligand_acpype(
 
     script = (
         "command -v acpype >/dev/null 2>&1 || { echo 'ACPYPE_NOT_FOUND'; exit 127; }; "
-        # ACPYPE's pip wheel bundles AmberTools, but set_for_pip() only wires
-        # that bundle when no antechamber is already on PATH. Some WSL images
-        # expose a stale /usr/local/bin/antechamber wrapper first; it points to
-        # a missing /usr/local/amber.sh, so ACPYPE's conversion silently fails
-        # before producing its expected temporary AC file named 'tmp'.
-        "ACPYPE_LAUNCHER=$(command -v acpype); "
-        "ACPYPE_PYTHON=$(head -n 1 \"$ACPYPE_LAUNCHER\" | sed 's/^#!//'); "
-        "ACPYPE_BUNDLE=$(\"$ACPYPE_PYTHON\" -c 'from acpype.utils import bundled_amber_dir; print(bundled_amber_dir() or \"\")'); "
-        "if [ -n \"$ACPYPE_BUNDLE\" ]; then "
-        "export AMBERHOME=\"$ACPYPE_BUNDLE/\"; "
-        "export PATH=\"$ACPYPE_BUNDLE/bin:$PATH\"; "
-        "export LD_LIBRARY_PATH=\"$ACPYPE_BUNDLE/lib:${LD_LIBRARY_PATH:-}\"; "
+        # Do not patch ACPYPE (PLAN.md P1-7). The runtime exports AMBERHOME;
+        # ACPYPE's own set_for_pip() handles the pip-wheel fallback when no
+        # antechamber is on PATH. A stale /usr/local/bin/antechamber wrapper
+        # would shadow the conda environment, so AMBERHOME always wins here.
+        "if [ -n \"${AMBERHOME:-}\" ]; then "
+        "export PATH=\"$AMBERHOME/bin:$PATH\"; "
+        "export LD_LIBRARY_PATH=\"$AMBERHOME/lib:${LD_LIBRARY_PATH:-}\"; "
         "fi; "
         f"acpype -i {shlex.quote(acpype_input.name)} -b {resname} "
         f"-c {shlex.quote(charge_method)} -n {int(net_charge)} "
@@ -1232,6 +1227,13 @@ def parameterize_ligand_acpype(
     # residue name).  Make the residue name match the moleculetype.
     _rename_itp_residue(itp, resname)
 
+    # Scientific guard (PLAN.md Phase 2): the ligand must carry exactly the
+    # formal charge that was requested.  A residual such as +0.002 e makes the
+    # whole system non-neutral and triggers GROMACS' PME background-charge
+    # warning, which invalidates the electrostatic energy.  Fail before any
+    # production file is written.
+    charge_sum, charge_atoms = _enforce_ligand_charge(itp, int(net_charge))
+
     atom_count, heavy_indices = _parse_itp_atoms(itp)
     posre = output_dir / f"posre_{resname}.itp"
     write_ligand_posre(posre, heavy_indices, force_constant=1000.0)
@@ -1245,6 +1247,9 @@ def parameterize_ligand_acpype(
         "posre": posre,
         "atom_count": atom_count,
         "heavy_indices": heavy_indices,
+        "charge_sum": charge_sum,
+        "charge_atoms": charge_atoms,
+        "net_charge": int(net_charge),
         "acpype_dir": acpype_dir,
     }
 
@@ -1311,6 +1316,62 @@ def _parse_itp_atoms(itp_path: Path) -> Tuple[int, List[int]]:
     if atom_count == 0:
         raise TopologyBuildError(f"No [ atoms ] entries found in ligand topology: {itp_path}")
     return atom_count, heavy
+
+
+def _ligand_charge_sum(itp_path: Path) -> Tuple[float, int]:
+    """Return (sum of ``[ atoms ]`` charges, atom count) from a ligand ITP.
+
+    Read independently of ``_parse_itp_atoms`` so that a malformed column can
+    never hide a charge imbalance.  GROMACS ITP columns are:
+
+        nr  type  resnr  residue  atom  cgnr  charge  mass
+    """
+    total = 0.0
+    count = 0
+    in_atoms = False
+    with open(itp_path, "r", encoding="utf-8", errors="replace") as f:
+        for raw in f:
+            line = raw.split(";", 1)[0].strip()
+            if not line:
+                continue
+            if line.startswith("["):
+                in_atoms = line.replace("[", "").replace("]", "").strip().lower() == "atoms"
+                continue
+            if not in_atoms:
+                continue
+            parts = line.split()
+            if len(parts) < 7:
+                continue
+            try:
+                int(parts[0])
+                charge = float(parts[6])
+            except ValueError:
+                continue
+            total += charge
+            count += 1
+    if count == 0:
+        raise TopologyBuildError(f"No [ atoms ] charge column found in ligand topology: {itp_path}")
+    return total, count
+
+
+def _enforce_ligand_charge(itp_path: Path, net_charge: int) -> Tuple[float, int]:
+    """Raise ``TopologyBuildError`` unless ``sum(q) == net_charge``.
+
+    This is the last line of defence before ``grompp``: an unbalanced ligand
+    would make GROMACS apply PME background corrections and silently shift the
+    electrostatic energy of the whole complex.
+    """
+    charge_sum, charge_atoms = _ligand_charge_sum(itp_path)
+    if abs(charge_sum - float(net_charge)) > 1e-4:
+        raise TopologyBuildError(
+            "Ligand topology is not charge-neutral: "
+            f"sum(q)={charge_sum:+.6f} e over {charge_atoms} atoms, but the requested "
+            f"net charge is {int(net_charge):+d} e. A non-neutral ligand would trigger "
+            "GROMACS' PME background-charge warning and invalidate the electrostatic "
+            "energy. Refusing to continue with a topology that cannot reproduce the "
+            "validated baseline."
+        )
+    return charge_sum, charge_atoms
 
 
 def write_ligand_posre(output_path: Path, heavy_indices: List[int], force_constant: float = 1000.0) -> Path:

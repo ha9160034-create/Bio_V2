@@ -1,11 +1,18 @@
-biopython==1.86
-numpy>=1.26.0,<2.3.0
-pandas>=2.2.0
-streamlit==1.62.0
-py3Dmol>=2.1.0
-rdkit==2026.3.6
-openbabel-wheel==3.1.1.23
-scipy>=1.13.0
-requests>=2.31.0
-plotly>=5.22.0
-acpype>=2026.10.15
+# requirements.txt — top-level Python dependencies only.
+# Versions live in constraints.txt (single source of truth).
+# Install with:  pip install -c constraints.txt -r requirements.txt
+#
+# NOTE: acpype is installed by conda in the `amber` environment (2023.10.27).
+#       It is deliberately NOT a pip dependency here: installing a second ACPYPE
+#       into the base env is exactly the drift documented in PLAN.md P0-1.
+
+biopython
+numpy
+pandas
+scipy
+rdkit
+openbabel-wheel
+streamlit
+plotly
+py3Dmol
+requests

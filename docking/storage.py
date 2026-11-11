@@ -20,24 +20,78 @@ DISCLAIMER_TEXT = (
     "لا تُعد هذه الدرجات قياساً معملياً لطاقة الارتباط الحرة أو دليلاً على الفاعلية السريرية أو الجرعة العلاجية."
 )
 
+# Pinned Vina binaries (PLAN.md §1.2). The Linux hash is enforced: a container
+# that cannot present this exact binary must refuse to dock, because the apt
+# package (1.2.7) would silently change every score.
+VINA_SHA256 = {
+    "linux": "fa0126a28a9ea9162d1b161dfa92bc76e632416db28ca246278ea4b2dc6860cb",
+    "win32": "e0c4b2715e0c1a74f6e92d0f3be0328ac97542eafbc111e6b1efad897a73cce5",
+}
+VINA_EXPECTED_VERSION = {
+    "linux": "AutoDock Vina v1.2.5",
+    "win32": "AutoDock Vina v1.2.7",  # dev-only host binary
+}
+
+
+class VinaBinaryError(RuntimeError):
+    """Raised when the Vina binary is not the pinned, verified artifact."""
+
+
+def _vina_platform_key() -> str:
+    return "win32" if sys.platform == "win32" else "linux"
+
+
+def verify_vina_binary(path: Path) -> dict:
+    """Return provenance for a Vina binary, enforcing the pin on Linux."""
+    digest = compute_file_sha256(Path(path))
+    key = _vina_platform_key()
+    expected = VINA_SHA256[key]
+    match = digest == expected
+    if not match and key == "linux":
+        raise VinaBinaryError(
+            "Vina binary hash mismatch.\n"
+            f"  path     : {path}\n"
+            f"  sha256   : {digest}\n"
+            f"  expected : {expected}\n"
+            "Refusing to dock: results would not be comparable to the validated baseline."
+        )
+    return {
+        "vina_path": str(path),
+        "vina_sha256": digest,
+        "vina_sha256_expected": expected,
+        "vina_sha256_match": match,
+        "vina_platform": key,
+        "vina_expected_version": VINA_EXPECTED_VERSION[key],
+    }
+
+
 def get_vina_path() -> Path:
     if sys.platform == "win32":
         if VINA_WINDOWS.is_file():
-            return VINA_WINDOWS
+            candidate = VINA_WINDOWS
+        else:
+            fallback = shutil.which("vina")
+            candidate = Path(fallback) if fallback else VINA_WINDOWS
     else:
         if VINA_LINUX.is_file():
             try:
-                # Ensure execution permission on Unix/Linux
                 os.chmod(VINA_LINUX, os.stat(VINA_LINUX).st_mode | 0o755)
             except Exception:
                 pass
+            candidate = VINA_LINUX
+        else:
+            fallback = shutil.which("vina")
+            if fallback:
+                # Fail closed: the apt-provided Vina (1.2.7) must never be used
+                # as a silent substitute for the validated 1.2.5 binary.
+                raise VinaBinaryError(
+                    f"Pinned Vina binary is missing at {VINA_LINUX}; "
+                    f"found {fallback} on PATH instead. Refusing to dock."
+                )
             return VINA_LINUX
-    # Fallback to system PATH
-    path_vina = shutil.which("vina")
-    if path_vina:
-        return Path(path_vina)
-    # Default to platform expected path
-    return VINA_WINDOWS if sys.platform == "win32" else VINA_LINUX
+    if candidate.is_file():
+        verify_vina_binary(candidate)
+    return candidate
 
 def create_run_directory(prefix="run") -> tuple[str, Path]:
     BASE_RUNS_DIR.mkdir(parents=True, exist_ok=True)
@@ -100,7 +154,37 @@ def collect_software_versions() -> dict:
         versions["autodock_vina"] = get_vina_version()
     except Exception:
         versions["autodock_vina"] = "unknown"
+    try:
+        vina_path = get_vina_path()
+        if vina_path.is_file():
+            versions.update(verify_vina_binary(vina_path))
+    except Exception as exc:
+        versions["vina_verification"] = f"failed: {exc}"
     return versions
+
+
+def vina_version_warning(shown_version: str = "") -> str:
+    """Return a warning when the runtime Vina version differs from the pin.
+
+    The Linux container enforces the hash in get_vina_path(), so this is mainly
+    for the Windows development path (1.2.7) where a different binary is allowed
+    but results must not be compared with the validated 1.2.5 baseline.
+    """
+    key = _vina_platform_key()
+    expected = VINA_EXPECTED_VERSION[key]
+    if not shown_version:
+        try:
+            from docking.engine import get_vina_version
+
+            shown_version = get_vina_version()
+        except Exception:
+            return ""
+    if expected and expected not in shown_version:
+        return (
+            f"Vina version mismatch: running '{shown_version}', validated baseline is "
+            f"'{expected}'. Scores are not directly comparable to published runs."
+        )
+    return ""
 
 MANIFEST_STATUSES = {
     "validation passed",

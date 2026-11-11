@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "image": {
+    "tag": "biobio-app:1.0.0",
+    "base": "mambaorg/micromamba:2.10.0@sha256:e1476182cd40eb1f7c0cfae4adec9bfd78f3d7f05c61368306abfdc8939c1198"
+  },
+  "versions": {
+    "python": "3.11.18",
+    "gromacs": "2026.3",
+    "gromacs_build": "nompi_h26635d9_100",
+    "rdkit": "2026.09.1",
+    "openbabel": "3.1.0",
+    "openbabel_wheel": "3.1.1.23",
+    "parmed": "4.3.1",
+    "numpy": "2.2.6",
+    "scipy": "1.17.1",
+    "streamlit": "1.67.0",
+    "acpype": "2023.10.27",
+    "ambertools": "26.0"
+  },
+  "vina": {
+    "path": "/app/tools/vina/vina",
+    "version": "AutoDock Vina v1.2.5",
+    "sha256": "fa0126a28a9ea9162d1b161dfa92bc76e632416db28ca246278ea4b2dc6860cb"
+  },
+  "gromacs_simd_allowed": ["AVX2_256", "AVX_256", "SSE2"],
+  "forcefield": {
+    "name": "amber99sb-ildn",
+    "comb_rule": 2,
+    "fudgeLJ": 0.5,
+    "fudgeQQ": 0.8333
+  },
+  "forbidden_paths": ["/usr/bin/vina", "/usr/bin/vina_split"],
+  "required_files": [
+    "/app/app.py",
+    "/app/md/indexing.py",
+    "/app/md/simulation.py",
+    "/app/md/topology.py",
+    "/app/docking/storage.py",
+    "/app/tools/vina/vina",
+    "/entrypoint.sh"
+  ]
+}
