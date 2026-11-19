@@ -1,6 +1,7 @@
 # Streamlit User Interface for Structural Analysis and Mutation Comparison
 import hashlib
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 
 from analysis.constants import AA_3TO1
@@ -341,7 +342,7 @@ def render_analysis_tab():
                 zoom_to_mutations=zoom_mutations, focus_mut=focus_mut,
                 show_ligands=show_ligands, ligand_style=ligand_style
             )
-            st.iframe(view_html, height=460)
+            components.html(view_html, height=450, scrolling=False)
 
             try:
                 total_res = sum(1 for r in struct[0].get_residues() if r.id[0] == ' ')

@@ -54,7 +54,8 @@ def render_protein_3d(pdb_string, bg_color='#111', style_type='cartoon',
     else:
         view.zoomTo()
 
-    return view._make_html()
+    style_override = "<style>html, body { margin: 0 !important; padding: 0 !important; overflow: hidden !important; width: 100% !important; height: 100% !important; } div[id^='3dmolviewer'] { margin: 0 !important; padding: 0 !important; overflow: hidden !important; width: 100% !important; height: 100% !important; }</style>"
+    return style_override + view._make_html()
 
 def build_sasa_figure(comparison_df: pd.DataFrame) -> go.Figure:
     """Build an interactive Plotly chart comparing SASA (Solvent-Accessible Surface Area) profiles and highlighting mutations."""
