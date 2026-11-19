@@ -103,5 +103,130 @@ class TestMDResultsAppTest(unittest.TestCase):
         self.assertIn("MM-PB(GB)SA", warnings)
 
 
+
+class TestRenderMol3D(unittest.TestCase):
+    def test_render_mol_3d_surface_and_styling(self):
+        with patch.object(md_ui.components, "html") as mock_html, \
+             patch.object(md_ui.py3Dmol, "view") as mock_view:
+            mock_v = unittest.mock.MagicMock()
+            mock_v.startjs = "<div id='3dmolviewer_UNIQUEID'>"
+            mock_v._make_html.return_value = "<div>test</div>"
+            mock_view.return_value = mock_v
+
+            md_ui.render_mol_3d(
+                "ATOM 1 ...",
+                height=450,
+                ligand_resname="JZ4",
+                show_surface=True,
+                surface_opacity=0.6,
+                surface_type="MS",
+                surface_color="#123456",
+            )
+
+            mock_v.addSurface.assert_called_once_with(
+                md_ui.py3Dmol.MS,
+                {"opacity": 0.6, "color": "#123456"},
+                {"hetflag": False},
+            )
+            mock_v.setStyle.assert_any_call(
+                {"hetflag": True},
+                {"stick": {"colorscheme": "greenCarbon", "radius": 0.28}, "sphere": {"colorscheme": "greenCarbon", "radius": 0.5}},
+            )
+            mock_v.setStyle.assert_any_call(
+                {"resn": ["JZ4", "JZ4", "UNL"]},
+                {"stick": {"colorscheme": "greenCarbon", "radius": 0.28}, "sphere": {"colorscheme": "greenCarbon", "radius": 0.5}},
+            )
+            self.assertIn("overflow: hidden !important;", mock_v.startjs)
+            mock_html.assert_called_once_with(mock_v._make_html(), height=450, scrolling=False)
+
+    def test_render_mol_3d_show_surface_false(self):
+        with patch.object(md_ui.components, "html"), \
+             patch.object(md_ui.py3Dmol, "view") as mock_view:
+            mock_v = unittest.mock.MagicMock()
+            mock_v.startjs = ""
+            mock_view.return_value = mock_v
+
+            md_ui.render_mol_3d("ATOM 1 ...", show_surface=False)
+            mock_v.addSurface.assert_not_called()
+
+    def test_render_mol_3d_surface_types(self):
+        for stype_str, expected in [
+            ("MS", md_ui.py3Dmol.MS),
+            ("MS (Molecular Surface)", md_ui.py3Dmol.MS),
+            ("VDW", md_ui.py3Dmol.VDW),
+            ("VDW (Van der Waals Surface)", md_ui.py3Dmol.VDW),
+            ("SAS", md_ui.py3Dmol.SAS),
+            ("SAS (Solvent-Accessible Surface)", md_ui.py3Dmol.SAS),
+        ]:
+            with self.subTest(stype_str=stype_str):
+                with patch.object(md_ui.components, "html"), \
+                     patch.object(md_ui.py3Dmol, "view") as mock_view:
+                    mock_v = unittest.mock.MagicMock()
+                    mock_v.startjs = ""
+                    mock_view.return_value = mock_v
+
+                    md_ui.render_mol_3d("ATOM 1 ...", surface_type=stype_str)
+                    mock_v.addSurface.assert_called_once_with(
+                        expected,
+                        {"opacity": 0.5, "color": "#ECEFF1"},
+                        {"hetflag": False},
+                    )
+
+    def test_traj3d_controls_render_in_apptest(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            rec = base / "receptor.pdb"
+            rec.write_text("ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00 20.00           C\n", encoding="utf-8")
+            result_dir = base / "md_run"
+            result_dir.mkdir()
+            (result_dir / "rmsd_ligand.xvg").write_text("# test\n0.0 0.10\n", encoding="utf-8")
+            (result_dir / "rmsf_protein.xvg").write_text("# test\n1 0.05\n", encoding="utf-8")
+            (result_dir / "hbond_num.xvg").write_text("# test\n0.0 1\n", encoding="utf-8")
+            (result_dir / "trajectory_pbc_fit.pdb").write_text(
+                "ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00 20.00           C\nEND\n",
+                encoding="utf-8",
+            )
+            manifest = {
+                "status": "completed",
+                "parameters": {"production_duration_ns": 1.0},
+                "engine": {"version": "test"},
+                "artifacts": {},
+                "replicate_statistics": {},
+            }
+            meta = {
+                "target_pdb": "3HTB",
+                "ligand_name": "JZ4",
+                "best_vina_score": -8.7,
+                "heavy_atoms": 10,
+                "total_atoms": 10,
+            }
+            app = AppTest.from_file(str(PROJECT_ROOT / "app.py"))
+            app.session_state["current_md_result"] = {
+                "run_id": "apptest_traj3d",
+                "run_dir": result_dir,
+                "manifest": manifest,
+                "pose_meta": meta,
+                "config": SimulationConfig(),
+                "ligand_resname": "JZ4",
+            }
+            fake_backend = GromacsBackend("wsl", ("wsl", "-e", "/usr/bin/gmx"), "/usr/bin/gmx", version="test")
+            with patch.object(md_ui, "detect_gromacs", return_value=fake_backend), \
+                 patch.object(md_ui, "get_gmx_version", return_value={"available": True, "version": "test", "path": "gmx"}), \
+                 patch.object(md_ui, "check_backend_tools", return_value={"acpype": True, "force_fields": ["amber99sb-ildn"]}), \
+                 patch.object(md_ui, "scan_available_docking_runs", return_value=[{"run_id": "test", "ligand_name": "JZ4", "target_id": "3HTB", "top_score": -8.7, "dir": base}]), \
+                 patch.object(md_ui, "extract_best_pose_from_docking_run", return_value=(rec, SimpleNamespace(pdb_block=""), meta)), \
+                 patch.object(md_ui.components, "html"):
+                app.run(timeout=30)
+
+            self.assertFalse(app.exception, [str(item.value) for item in app.exception])
+            checkbox = app.checkbox(key="md_show_surface")
+            self.assertTrue(checkbox.value)
+            selectbox = app.selectbox(key="md_surface_type")
+            self.assertEqual(selectbox.value, "MS (Molecular Surface)")
+            slider = app.slider(key="md_surface_opacity")
+            self.assertEqual(slider.value, 0.5)
+
+
 if __name__ == "__main__":
     unittest.main()
