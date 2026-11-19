@@ -287,8 +287,10 @@ def calculate_rmsf_from_trajectory(
 
 
 MMPBSA_NOT_AVAILABLE_MESSAGE = (
-    "لم يتم العثور على نتائج MM-PB(GB)SA حقيقية. هذه القيمة لا تُحسب تقديرياً من درجة Vina؛ "
-    "شغّل gmx_MMPBSA على مسار الإنتاج ثم ضع FINAL_RESULTS_MMPBSA.dat في مجلد الجولة."
+    "No real MM-PB(GB)SA — MM-PBSA (Molecular Mechanics / Poisson–Boltzmann Surface Area) / "
+    "MM-GBSA (Molecular Mechanics / Generalized Born Surface Area) — results were found. "
+    "This value is never estimated from the Vina docking score; run gmx_MMPBSA on the production "
+    "trajectory and place FINAL_RESULTS_MMPBSA.dat in the run directory."
 )
 
 
@@ -525,7 +527,7 @@ def create_rmsd_plotly(rmsd_records: List[RMSDRecord], ligand_name: str = "Ligan
     """Generate interactive Plotly visualization for Ligand Heavy-Atom RMSD."""
     if not rmsd_records:
         fig = go.Figure()
-        fig.add_annotation(text="لا توجد بيانات RMSD متاحة", showarrow=False)
+        fig.add_annotation(text="No RMSD (Root-Mean-Square Deviation) data available", showarrow=False)
         return fig
 
     times = [r.time_ns for r in rmsd_records]
@@ -538,7 +540,7 @@ def create_rmsd_plotly(rmsd_records: List[RMSDRecord], ligand_name: str = "Ligan
         x=times,
         y=vals,
         mode="lines",
-        name=f"RMSD: {ligand_name}",
+        name=f"RMSD (Root-Mean-Square Deviation): {ligand_name}",
         line=dict(color="#2563EB", width=2.5),
         hovertemplate="Time: %{x:.3f} ns<br>RMSD: %{y:.2f} Å<extra></extra>"
     ))
@@ -548,7 +550,7 @@ def create_rmsd_plotly(rmsd_records: List[RMSDRecord], ligand_name: str = "Ligan
         x=[times[0], times[-1]],
         y=[mean_val, mean_val],
         mode="lines",
-        name=f"المتوسط ({mean_val:.2f} Å)",
+        name=f"Mean ({mean_val:.2f} Å)",
         line=dict(color="#DC2626", width=1.5, dash="dash")
     ))
 
@@ -557,14 +559,14 @@ def create_rmsd_plotly(rmsd_records: List[RMSDRecord], ligand_name: str = "Ligan
         y0=0.0, y1=2.0,
         fillcolor="rgba(34, 197, 94, 0.12)",
         line_width=0,
-        annotation_text="نطاق الاستقرار الهيكلي (RMSD <= 2.0 Å)",
+        annotation_text="Structural Stability Zone (RMSD <= 2.0 Å)",
         annotation_position="bottom right"
     )
 
     fig.update_layout(
-        title=f"<b>الانحراف المعياري للذرات الثقيلة (Heavy-Atom RMSD)</b> — {ligand_name}",
-        xaxis_title="زمن المحاكاة (Simulation Time, ns)",
-        yaxis_title="RMSD (Å)",
+        title=f"<b>Ligand Heavy-Atom RMSD (Root-Mean-Square Deviation)</b> — {ligand_name}",
+        xaxis_title="Simulation Time, ns (nanoseconds)",
+        yaxis_title="RMSD (Root-Mean-Square Deviation), Å (Angstroms)",
         template="plotly_white",
         hovermode="x unified",
         margin=dict(l=40, r=40, t=60, b=40),
@@ -577,7 +579,7 @@ def create_rmsf_plotly(rmsf_records: List[RMSFRecord], target_id: str = "Target"
     """Generate interactive Plotly visualization for per-residue protein RMSF."""
     if not rmsf_records:
         fig = go.Figure()
-        fig.add_annotation(text="لا توجد بيانات RMSF متاحة", showarrow=False)
+        fig.add_annotation(text="No RMSF (Root-Mean-Square Fluctuation) data available", showarrow=False)
         return fig
 
     resnums = [r.resnum for r in rmsf_records]
@@ -588,21 +590,21 @@ def create_rmsf_plotly(rmsf_records: List[RMSFRecord], target_id: str = "Target"
     fig.add_trace(go.Bar(
         x=resnums,
         y=vals,
-        name="RMSF (Cα)",
+        name="RMSF (Cα — Alpha-Carbon)",
         marker=dict(
             color=vals,
             colorscale="Viridis",
             showscale=True,
-            colorbar=dict(title="Å")
+            colorbar=dict(title="Å (Angstroms)")
         ),
         text=names,
         hovertemplate="Residue: %{text}<br>RMSF: %{y:.2f} Å<extra></extra>"
     ))
 
     fig.update_layout(
-        title=f"<b>تذبذب الثمالات البروتينية (Protein Residue RMSF)</b> — {target_id}",
-        xaxis_title="رقم الثمالة (Residue Index)",
-        yaxis_title="RMSF (Å)",
+        title=f"<b>Protein Residue RMSF (Root-Mean-Square Fluctuation)</b> — {target_id}",
+        xaxis_title="Residue Index",
+        yaxis_title="RMSF (Root-Mean-Square Fluctuation), Å (Angstroms)",
         template="plotly_white",
         margin=dict(l=40, r=40, t=60, b=40)
     )
@@ -613,7 +615,7 @@ def create_hbond_persistence_plotly(hbonds: List[Dict[str, Any]]) -> go.Figure:
     """Generate interactive Plotly visualization for Hydrogen-Bond Persistence."""
     if not hbonds:
         fig = go.Figure()
-        fig.add_annotation(text="لا توجد بيانات روابط هيدروجينية متاحة", showarrow=False)
+        fig.add_annotation(text="No H-bond (Hydrogen Bond) data available", showarrow=False)
         return fig
 
     labels = [f"{h['donor']} ➔ {h['acceptor']}" for h in hbonds]
@@ -626,13 +628,13 @@ def create_hbond_persistence_plotly(hbonds: List[Dict[str, Any]]) -> go.Figure:
         y=labels,
         orientation="h",
         marker=dict(color=colors),
-        hovertemplate="التفاعل: %{y}<br>الاستدامة: %{x:.1f}%<extra></extra>"
+        hovertemplate="Interaction: %{y}<br>Persistence: %{x:.1f}%<extra></extra>"
     ))
 
     fig.update_layout(
-        title="<b>استدامة الروابط الهيدروجينية (Hydrogen-Bond Persistence %)</b>",
-        xaxis_title="نسبة الثبات عبر مسار المحاكاة (%)",
-        yaxis_title="الزوج المتفاعل (Donor ➔ Acceptor)",
+        title="<b>H-bond (Hydrogen Bond) Persistence (%)</b>",
+        xaxis_title="Trajectory Occupancy / Persistence (%)",
+        yaxis_title="Interacting Pair (Donor ➔ Acceptor)",
         xaxis=dict(range=[0, 105]),
         template="plotly_white",
         margin=dict(l=40, r=40, t=60, b=40)
@@ -647,7 +649,7 @@ def create_hbond_count_plotly(
     """Plot the real protein–ligand H-bond count from ``gmx hbond -num``."""
     fig = go.Figure()
     if not points:
-        fig.add_annotation(text="لا توجد بيانات روابط هيدروجينية (gmx hbond)", showarrow=False)
+        fig.add_annotation(text="No H-bond (Hydrogen Bond) data available (gmx hbond)", showarrow=False)
         fig.update_layout(template="plotly_white")
         return fig
 
@@ -659,7 +661,7 @@ def create_hbond_count_plotly(
         x=times,
         y=counts,
         mode="lines",
-        name=f"H-bonds: Protein ⚯ {ligand_name}",
+        name=f"H-bonds (Hydrogen Bonds): Protein ⚯ {ligand_name}",
         line=dict(color="#059669", width=2.0),
         hovertemplate="Time: %{x:.1f} ps<br>H-bonds: %{y:.0f}<extra></extra>",
     ))
@@ -667,12 +669,12 @@ def create_hbond_count_plotly(
         y=mean_count,
         line_dash="dash",
         line_color="#0F172A",
-        annotation_text=f"المتوسط: {mean_count:.1f}",
+        annotation_text=f"Mean: {mean_count:.1f}",
     )
     fig.update_layout(
-        title="<b>عدد الروابط الهيدروجينية بين البروتين والدواء عبر الزمن</b>",
-        xaxis_title="الزمن (ps)",
-        yaxis_title="عدد الروابط",
+        title="<b>Protein–Ligand H-bond (Hydrogen Bond) Count Over Time</b>",
+        xaxis_title="Simulation Time, ps (picoseconds)",
+        yaxis_title="Number of H-bonds (Hydrogen Bonds)",
         template="plotly_white",
         margin=dict(l=40, r=40, t=60, b=40),
     )
@@ -701,11 +703,11 @@ def load_last_frame_pdb(trajectory_pdb: Path) -> str:
 def create_mmpbsa_breakdown_plotly(result: MMPBSAResult) -> go.Figure:
     """Generate interactive Plotly waterfall / bar chart for MM-PB(GB)SA energy decomposition."""
     terms = [
-        "فان دير فالس (ΔE_vdw)",
-        "الكولومبية (ΔE_elec)",
-        "الذوبان القطبي (ΔG_polar)",
-        "الذوبان غير القطبي (ΔG_nonpolar)",
-        "صافي طاقة الارتباط (ΔG_bind)"
+        "LJ-SR (Short-Range Lennard-Jones / van der Waals Energy, ΔE_vdw)",
+        "Coul-SR (Short-Range Coulombic Electrostatic Energy, ΔE_elec)",
+        "Polar Solvation (ΔG_polar)",
+        "Non-Polar Solvation — SASA (Solvent-Accessible Surface Area, ΔG_nonpolar)",
+        "Net Binding Free Energy (ΔG_bind)",
     ]
     vals = [
         result.delta_vdw,
@@ -727,8 +729,8 @@ def create_mmpbsa_breakdown_plotly(result: MMPBSAResult) -> go.Figure:
     ))
 
     fig.update_layout(
-        title=f"<b>تحليل مكونات طاقة الارتباط الحرة ({result.solvation_model})</b>",
-        yaxis_title="الطاقة (kcal/mol)",
+        title=f"<b>Binding Free Energy Component Decomposition — {result.solvation_model}</b>",
+        yaxis_title="Energy, kcal/mol (kilocalories per mole)",
         template="plotly_white",
         margin=dict(l=40, r=40, t=60, b=40)
     )

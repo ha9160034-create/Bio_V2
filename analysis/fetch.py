@@ -82,16 +82,16 @@ def load_mutation_db():
             with open(candidate, "r", encoding="utf-8") as f:
                 data = json.load(f)
         except Exception as exc:
-            st.error(f"تعذر قراءة قاعدة الطفرات المحلية {candidate.name}: {exc}")
+            st.error(f"Unable to read local mutation database ({candidate.name}): {exc}")
             return {}
         valid, message = validate_mutation_database(data)
         if not valid:
-            st.error(f"قاعدة الطفرات المحلية غير صالحة ({candidate.name}): {message}")
+            st.error(f"Invalid local mutation database ({candidate.name}): {message}")
             return {}
         return data
 
     st.warning(
-        "لم يتم العثور على قاعدة الطفرات المحلية `data/mutation.json`. "
-        "لن يتم جلبها من الإنترنت تلقائياً لأن المصدر يجب أن يكون مثبتاً ومراجعاً."
+        "Local mutation database `data/mutation.json` was not found. "
+        "It will not be fetched automatically from the internet because the source must be pinned and reviewed."
     )
     return {}

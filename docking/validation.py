@@ -437,3 +437,59 @@ def validate_redocking_top_n(
             f">= {min_seed_support} independent seeds"
         ),
     }
+
+
+def derive_single_docking_status(
+    validation_details: dict | None,
+    seed_count: int,
+    min_validation_seeds: int = 3,
+    top_n: int = 10,
+    rmsd_cutoff: float = 2.0,
+) -> tuple[str, list[str]]:
+    """Derive the manifest/UI validation status from real redocking metrics.
+
+    Order matters: full protocol validation (top-1 correct and reproducible)
+    must be reported before the weaker Top-N recovery fallback, otherwise a
+    successful top-1 pose is mislabelled as "recovery only".
+    """
+    if not validation_details:
+        return "validation unavailable", []
+
+    if seed_count < min_validation_seeds:
+        return "exploratory—insufficient independent seeds", []
+
+    warnings: list[str] = []
+    top1_rmsd_pass = bool(validation_details.get("top1_rmsd_pass"))
+    top1_cluster_pass = bool(validation_details.get("top1_cluster_pass"))
+    recovery_rmsd_pass = bool(validation_details.get("recovery_rmsd_pass"))
+    recovery_cluster_pass = bool(validation_details.get("recovery_cluster_pass"))
+
+    if bool(validation_details.get("protocol_validated")):
+        return "validation passed", warnings
+
+    if recovery_rmsd_pass and recovery_cluster_pass:
+        if not top1_rmsd_pass:
+            warnings.append(
+                f"Crystal pose recovered reproducibly in Top-{top_n}, but Vina did not rank it first."
+            )
+        elif not top1_cluster_pass:
+            warnings.append(
+                "Gate A Warning: Top-1 pose RMSD <= "
+                f"{rmsd_cutoff} Å, but its cluster lacks support from at least "
+                f"{min_validation_seeds} independent seeds."
+            )
+        return "validation passed (Top-10 recovery)", warnings
+
+    if not recovery_rmsd_pass:
+        best = (validation_details.get("recovery") or {}).get("rmsd_angstrom")
+        suffix = f" (best recovery: {best} Å)" if best is not None else ""
+        warnings.append(
+            f"No pose within Top-{top_n} achieved RMSD <= {rmsd_cutoff} Å{suffix}."
+        )
+    elif not recovery_cluster_pass:
+        warnings.append(
+            "Gate A Warning: Pose RMSD <= "
+            f"{rmsd_cutoff} Å, but cluster lacks support from at least "
+            f"{min_validation_seeds} independent seeds."
+        )
+    return "validation failed", warnings

@@ -1819,27 +1819,39 @@ def evaluate_cgenff_penalty(penalty_val: float) -> CGenFFPenaltyReport:
     val = float(penalty_val)
     if val < 10.0:
         status = "PASS"
-        verdict = "معاملات CGenFF عالية الدقة وموثوقة لمحاكاة الإنتاج (Penalty < 10)"
+        verdict = (
+            "High-accuracy CGenFF (CHARMM General Force Field) parameters reliable for "
+            "production MD (Molecular Dynamics) (Penalty < 10)"
+        )
         details = [
-            f"درجة الجزاء القصوى: {val:.1f}",
-            "المعاملات منتقاة بدقة ومتسقة كيميائياً مع حقل القوى CHARMM36.",
-            "لا تتطلب إعادة مسح لطاقة الالتواء أو حسابات تفاعل QM مع الماء.",
+            f"Maximum penalty score: {val:.1f}",
+            (
+                "Parameters are well-matched and chemically consistent with the "
+                "CHARMM36 (Chemistry at HARvard Macromolecular Mechanics Force Field v36) force field."
+            ),
+            "No torsional energy rescanning or QM (Quantum Mechanics) water-interaction calculations required.",
         ]
     elif val <= 50.0:
         status = "WARNING"
-        verdict = "معاملات مقبولة مع التحذير (10 <= Penalty <= 50): تتطلب فحصاً إضافياً"
+        verdict = (
+            "Acceptable CGenFF (CHARMM General Force Field) parameters with warning "
+            "(10 <= Penalty <= 50): additional validation required"
+        )
         details = [
-            f"درجة الجزاء القصوى: {val:.1f}",
-            "بعض زوايا الالتواء أو توزيع الشحنات تستند لمقاربات جزئية.",
-            "يُنصح بإجراء مسح طاقة الالتواء ومقارنتها بالحسابات الكمية (QM).",
+            f"Maximum penalty score: {val:.1f}",
+            "Some dihedral angles or charge assignments rely on partial analogies.",
+            "Torsional potential energy scanning and comparison against QM (Quantum Mechanics) calculations are recommended.",
         ]
     else:
         status = "FAIL"
-        verdict = "معاملات غير موثوقة (Penalty > 50): يُحظر استخدامها في الإنتاج دون إعادة تدريب"
+        verdict = (
+            "Unreliable CGenFF (CHARMM General Force Field) parameters (Penalty > 50): "
+            "prohibited for production MD (Molecular Dynamics) without re-parameterization"
+        )
         details = [
-            f"درجة الجزاء القصوى: {val:.1f}",
-            "المعاملات المقترحة تفتقر إلى النظائر الكيميائية المعتمدة في CGenFF.",
-            "إعادة ملاءمة الشحنات السطحية وزوايا الالتواء بواسطة DFT أمر إلزامي.",
+            f"Maximum penalty score: {val:.1f}",
+            "Proposed parameters lack validated chemical analogies in CGenFF (CHARMM General Force Field).",
+            "Re-fitting partial charges and dihedral potentials using DFT (Density Functional Theory) is mandatory.",
         ]
 
     return CGenFFPenaltyReport(

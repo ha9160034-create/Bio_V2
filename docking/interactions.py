@@ -1,7 +1,7 @@
 # Protein-Ligand Interaction and Pharmacological Profiler
 """
-وحدة تحليل التفاعلات الكيميائية بين الدواء والبروتين، وكشف الروابط الهيدروجينية،
-وتقييم الخصائص الصيدلانية ومعايير ليبينسكي (Lipinski's Rule of 5).
+Protein-ligand chemical interaction analysis, contact detection,
+and pharmacological profiling using Lipinski's Rule of Five.
 """
 
 from io import StringIO
@@ -34,15 +34,15 @@ def _aggregator_alerts(mol) -> list[str]:
 
 def calculate_drug_properties(smiles: str) -> dict:
     """
-    حساب الخصائص الصيدلانية والكيميائية للدواء وفق قواعد ليبينسكي (Lipinski Rule of Five)
-    لتقييم مدى ملائمة الجزيء كدواء فموي (Drug-likeness / ADME).
+    Calculate physicochemical and pharmacological ligand properties according to Lipinski's Rule of Five
+    to evaluate oral drug-likeness (ADME heuristic).
     """
     if not smiles or not smiles.strip():
         return {}
     
     mol = Chem.MolFromSmiles(smiles.strip())
     if mol is None:
-        return {"error": "صيغة SMILES غير صالحة كيميائياً"}
+        return {"error": "Chemically invalid SMILES (Simplified Molecular-Input Line-Entry System) string"}
 
     mw = round(Descriptors.MolWt(mol), 2)
     logp = round(Descriptors.MolLogP(mol), 2)
@@ -52,7 +52,7 @@ def calculate_drug_properties(smiles: str) -> dict:
     tpsa = round(rdMolDescriptors.CalcTPSA(mol), 2)
     formula = rdMolDescriptors.CalcMolFormula(mol)
 
-    # التحقق من قواعد ليبينسكي الخمس (Lipinski Violations)
+    # Check Lipinski's Rule of Five violations
     violations = 0
     if mw > 500: violations += 1
     if logp > 5.0: violations += 1
@@ -115,11 +115,11 @@ def calculate_drug_properties(smiles: str) -> dict:
         "aggregation_alerts": aggregation_alerts,
         "aggregation_flags": aggregation_flags,
         "aggregation_logp_threshold": 3.5,
-        "drug_likeness": "مطابق لقواعد ليبينسكي" if lipinski_pass else f"تنبيه: يوجد {violations} تجاوزات لقواعد ليبينسكي"
+        "drug_likeness": "Compliant with Lipinski's Rule of Five" if lipinski_pass else f"Alert: {violations} Lipinski's Rule of Five violation(s)"
     }
 
 def _parse_atoms_from_block(block_text: str, is_ligand: bool = False) -> list[dict]:
-    """استخراج إحداثيات وخصائص الذرات من نصوص PDB أو PDBQT.
+    """Extract atom coordinates and properties from PDB or PDBQT text.
 
     PDBQT stores an AutoDock atom *type* in columns 78-79 (for example ``A``,
     ``OA``, ``NA``, ``HD``), not a PDB element.  Reading those columns as an
@@ -182,10 +182,10 @@ def analyze_protein_ligand_interactions(
     contact_cutoff: float = 4.0
 ) -> dict:
     """
-    استكشاف أولي قائم على المسافات الهندسية للتماسات بين وضعية الدواء والمستقبل البروتيني:
-    1. مرشحات التماس القطبي (Polar contact candidates): ذرات O/N/F بمسافة <= 3.5 Å.
-    2. مرشحات التماس الكربوني (Carbon contact candidates): ذرات كربون بمسافة <= 4.0 Å.
-    3. أحماض الجيب المحيطة المتماسة (Interacting Residues): أحماض بمسافة تماس <= 4.0 Å.
+    Exploratory geometric distance-based contact detection between ligand pose and protein receptor:
+    1. Polar contact candidates: O/N/F atoms within <= 3.5 Å.
+    2. Carbon contact candidates: carbon atoms within <= 4.0 Å.
+    3. Interacting residues: pocket residues within <= 4.0 Å.
     """
     rec_atoms = _parse_atoms_from_block(receptor_pdb_text, is_ligand=False)
     lig_atoms = _parse_atoms_from_block(ligand_pdbqt_block, is_ligand=True)
@@ -215,7 +215,7 @@ def analyze_protein_ligand_interactions(
         for l_idx, l_atom in enumerate(lig_atoms):
             dist = float(dist_matrix[r_idx, l_idx])
 
-            # تسجيل الأحماض المتفاعلة بشكل عام ضمن النطاق القريب
+            # Record interacting residues within the close-contact cutoff
             if dist <= contact_cutoff:
                 res_key = f"{r_atom['res_name']} {r_atom['res_num']} (Chain {r_atom['chain']})"
                 if res_key not in interacting_res_map or dist < interacting_res_map[res_key]["min_distance"]:
@@ -226,7 +226,7 @@ def analyze_protein_ligand_interactions(
                         "min_distance": round(dist, 2)
                     }
 
-            # 1. كشف مرشحات التماس القطبي (Polar Contact Candidates)
+            # 1. Detect polar contact candidates
             if dist <= polar_cutoff:
                 if r_atom["element"] in polar_elements and l_atom["element"] in polar_elements:
                     polar_contacts.append({
@@ -238,7 +238,7 @@ def analyze_protein_ligand_interactions(
                         "distance_angstrom": round(dist, 2)
                     })
 
-            # 2. كشف مرشحات التماس الكربوني (Carbon-Carbon Contacts)
+            # 2. Detect carbon-carbon contacts
             if dist <= contact_cutoff:
                 if r_atom["element"] == "C" and l_atom["element"] == "C":
                     carbon_contacts.append({
@@ -248,7 +248,7 @@ def analyze_protein_ligand_interactions(
                         "distance_angstrom": round(dist, 2)
                     })
 
-    # إزالة التكرارات
+    # Deduplicate polar contacts
     unique_polar = []
     seen_polar = set()
     for pc in polar_contacts:
@@ -302,10 +302,10 @@ def compare_interactions(
     mutation_residue_nums: list = None
 ) -> dict:
     """
-    مقارنة التماسات الاستكشافية بين السليم والمصاب لتحديد:
-    - مرشحات التماس القطبي المفقودة في المصاب.
-    - مرشحات التماس القطبي الجديدة في المصاب.
-    - هل يدخل حمض الطفرة في نطاق التماس المباشر مع الدواء؟
+    Compare exploratory contacts between WT (Wild-Type Reference) and MT (Mutant Variant) to determine:
+    - Polar contact candidates lost in the mutant.
+    - Polar contact candidates gained in the mutant.
+    - Whether the mutation residue enters direct contact range with the ligand.
 
     The returned keys are the canonical ``*_contact_*`` names used by the UI;
     deprecated aliases are also kept so older callers do not break.
@@ -379,10 +379,10 @@ class ScoreDifferenceInterpretation(str):
     @property
     def category(self) -> str:
         if self.direction == "less favorable":
-            return "فارق درجة أقل ملاءمة للمصاب (Less Favorable)"
+            return "Less Favorable for MT (Mutant Variant)"
         elif self.direction == "more favorable":
-            return "فارق درجة أفضل للمصاب (More Favorable)"
-        return "فارق درجة غير متغير (Unchanged)"
+            return "More Favorable for MT (Mutant Variant)"
+        return "Unchanged"
 
     def __getitem__(self, key):
         if isinstance(key, str):
@@ -396,7 +396,29 @@ class ScoreDifferenceInterpretation(str):
         return super().__getitem__(key)
 
 
-def interpret_score_difference(delta_score: float) -> ScoreDifferenceInterpretation:
+def interpret_score_difference(
+    delta_score: float,
+    uncertainty_kcal: float | None = None,
+) -> ScoreDifferenceInterpretation:
+    noise_floor = max(float(uncertainty_kcal), 0.0) if uncertainty_kcal is not None else None
+    neutral_band = max(noise_floor or 0.0, 0.5)
+    if abs(delta_score) <= neutral_band:
+        if noise_floor is None:
+            noise_text = (
+                f"the {neutral_band:.2f} kcal/mol protocol noise floor"
+            )
+        else:
+            noise_text = (
+                f"the estimated run-to-run docking score noise "
+                f"({noise_floor:.2f} kcal/mol) of this protocol"
+            )
+        msg = (
+            f"Exploratory protocol-specific score difference: {delta_score:+.2f} kcal/mol, "
+            f"which is within {noise_text}. "
+            "No direction is claimed; this is not binding affinity, resistance, "
+            "efficacy, or clinical guidance."
+        )
+        return ScoreDifferenceInterpretation(msg)
     sign = "less favorable" if delta_score > 0 else "more favorable" if delta_score < 0 else "unchanged"
     msg = (
         f"Exploratory protocol-specific score difference: {delta_score:+.2f} kcal/mol "

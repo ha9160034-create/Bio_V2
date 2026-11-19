@@ -27,8 +27,8 @@ PRESET_SCHEMA_VERSION = 2
 
 HUMAN_CLINICAL_PRESETS = {
     "egfr_erlotinib_t790m": {
-        "title": "🎗️ سرطان الرئة: مستقبل EGFR مع عقار Erlotinib (طفرة المقاومة T790M)",
-        "category": "الأورام (Oncology / NSCLC)",
+        "title": "🎗️ Lung Cancer: EGFR (Epidermal Growth Factor Receptor) with Erlotinib (T790M Resistance Mutation)",
+        "category": "Oncology / NSCLC (Non-Small Cell Lung Cancer)",
         "target_name": "EGFR Tyrosine Kinase Domain",
         "healthy_id": "1M17",
         "mutant_id": "2JIT",
@@ -39,7 +39,7 @@ HUMAN_CLINICAL_PRESETS = {
         "healthy_ref_ligand": "AQ4",
         "mutant_ref_ligand": "",
         "ref_ligand": "AQ4",
-        "pocket_residues": "A:790, A:793, A:858",
+        "pocket_residues": "A:766, A:769, A:834",
         "target_domain": "Kinase Domain",
         "matched_comparison_supported": True,
         "covalent_drug": False,
@@ -48,9 +48,9 @@ HUMAN_CLINICAL_PRESETS = {
             "co-crystal ligand, so only the healthy arm can be redocking-validated."
         ),
         "clinical_note": (
-            "طفرة T790M (Gatekeeper Mutation) تُغير الثريونين الصغير إلى ميثيونين أكبر حجماً، "
-            "مما يُحدث إعاقة فراغية (Steric Hindrance) تمنع أدوية الجيل الأول مثل Erlotinib من الارتباط، "
-            "مسببة مقاومة سريرية لدى مرضى سرطان الرئة غير صغير الخلايا (NSCLC)."
+            "The T790M gatekeeper mutation substitutes a small threonine with a bulkier methionine, "
+            "introducing steric hindrance that blocks first-generation inhibitors such as Erlotinib from binding "
+            "and causes clinical resistance in NSCLC (Non-Small Cell Lung Cancer) patients."
         ),
         "limitations": [
             "2JIT is apo; no mutant co-crystal ligand exists for mutant-arm redocking validation.",
@@ -58,8 +58,8 @@ HUMAN_CLINICAL_PRESETS = {
         ],
     },
     "egfr_osimertinib_t790m": {
-        "title": "💊 سرطان الرئة: مستقبل EGFR مع عقار Osimertinib (الجيل الثالث الموجه للطفرة)",
-        "category": "الأورام (Oncology / NSCLC)",
+        "title": "💊 Lung Cancer: EGFR (Epidermal Growth Factor Receptor) with Osimertinib (Third-Generation Mutant-Selective Inhibitor)",
+        "category": "Oncology / NSCLC (Non-Small Cell Lung Cancer)",
         "target_name": "EGFR T790M Active Conformation",
         "healthy_id": "1M17",
         "mutant_id": "2JIT",
@@ -70,7 +70,7 @@ HUMAN_CLINICAL_PRESETS = {
         "healthy_ref_ligand": "AQ4",
         "mutant_ref_ligand": "",
         "ref_ligand": "AQ4",
-        "pocket_residues": "A:790, A:793, A:797, A:858",
+        "pocket_residues": "A:766, A:769, A:773, A:834",
         "target_domain": "Kinase Domain",
         "matched_comparison_supported": True,
         "covalent_drug": True,
@@ -79,8 +79,8 @@ HUMAN_CLINICAL_PRESETS = {
             "only scores a non-covalent approximation and cannot model the acrylamide adduct."
         ),
         "clinical_note": (
-            "عقار Osimertinib صُمم خصيصاً كعلاج موجه ليتفادى الإعاقة الفراغية لطفرة T790M "
-            "ويرتبط تساهمياً بالحامض Cys797، ليعيد التحكم بالورم بعد فشل أدوية الجيل الأول."
+            "Osimertinib was specifically designed as a targeted therapy to overcome the steric hindrance of the T790M mutation "
+            "and form a covalent bond with Cys797, restoring tumor control after failure of first-generation inhibitors."
         ),
         "limitations": [
             "Covalent binding is not modelled by Vina; scores are a non-covalent approximation.",
@@ -88,9 +88,9 @@ HUMAN_CLINICAL_PRESETS = {
         ],
     },
     "sickle_cell_voxelotor": {
-        "title": "🩸 فقر الدم المنجلي: الهيموجلوبين السليم مقابل المنجلي مع دواء Voxelotor",
-        "category": "أمراض الدم (Hematology)",
-        "target_name": "Human Hemoglobin Tetramer (HbA vs HbS)",
+        "title": "🩸 Sickle Cell Disease: HbA (Adult Normal Hemoglobin) vs HbS (Sickle Cell Hemoglobin) with Voxelotor",
+        "category": "Hematology",
+        "target_name": "Human Hemoglobin Tetramer — HbA (Adult Normal Hemoglobin) vs HbS (Sickle Cell Hemoglobin)",
         "healthy_id": "2HHB",
         "mutant_id": "2HBS",
         "healthy_chain": "A",
@@ -110,17 +110,17 @@ HUMAN_CLINICAL_PRESETS = {
             "is an exploratory allosteric comparison, not a matched mutation comparison."
         ),
         "clinical_note": (
-            "طفرة Glu6Val في سلسلة بيتا تجعل الهيموجلوبين يتبلمر في حالات نقص الأكسجين مشكلاً خلايا منجلية. "
-            "عقار Voxelotor يرتبط بسلسلة ألفا ويزيد تقارب الهيموجلوبين للأكسجين مانعاً البلمرة والتمنجل."
+            "The Glu6Val mutation in the beta-globin chain causes hemoglobin to polymerize under hypoxic conditions, forming sickled red blood cells. "
+            "Voxelotor binds to the alpha-globin chain and increases hemoglobin oxygen affinity, inhibiting polymerization and sickling."
         ),
         "limitations": [
-            "The docked chain (alpha) does not carry the E6V mutation; ΔScore is not a mutation effect.",
+            "The docked chain (alpha) does not carry the E6V mutation; ΔScore (Docking Score Difference) is not a mutation effect.",
             "2HHB/2HBS are deoxy (T-state) structures; voxelotor stabilises the R-state, so the starting conformation is not the drug-bound state.",
         ],
     },
     "cml_bcr_abl_imatinib": {
-        "title": "🎗️ سرطان الدم CML: إنزيم BCR-ABL1 مع عقار Imatinib (طفرة المقاومة T315I)",
-        "category": "أمراض الدم والأورام (Hematology / Oncology)",
+        "title": "🎗️ CML (Chronic Myeloid Leukemia): BCR-ABL1 Kinase with Imatinib (T315I Resistance Mutation)",
+        "category": "Hematology / Oncology",
         "target_name": "BCR-ABL1 Tyrosine Kinase",
         "healthy_id": "1IEP",
         "mutant_id": "3QRJ",
@@ -140,8 +140,8 @@ HUMAN_CLINICAL_PRESETS = {
             "not imatinib; the mutant co-crystal therefore cannot validate imatinib redocking."
         ),
         "clinical_note": (
-            "طفرة T315I تُعرف بطفرة بوابة الكيناز (Gatekeeper)، حيث يُستبدل الثريونين بالآيزولوسين "
-            "مما يؤدي إلى فقدان رابطة هيدروجينية أساسية وحدوث إعاقة فراغية تطرد عقار Imatinib."
+            "The T315I gatekeeper mutation replaces threonine with isoleucine, "
+            "eliminating a key hydrogen bond and introducing steric hindrance that prevents Imatinib binding."
         ),
         "limitations": [
             "The mutant entry 3QRJ contains DCC-2036, not imatinib; only the healthy arm has an imatinib reference.",
@@ -149,8 +149,8 @@ HUMAN_CLINICAL_PRESETS = {
         ],
     },
     "melanoma_braf_vemurafenib": {
-        "title": "☀️ سرطان الجلد الميلانوما: إنزيم BRAF مع عقار Vemurafenib (طفرة V600E)",
-        "category": "الأورام (Oncology / Melanoma)",
+        "title": "☀️ Melanoma Skin Cancer: BRAF Kinase with Vemurafenib (V600E Mutation)",
+        "category": "Oncology / Melanoma",
         "target_name": "BRAF Kinase Domain",
         "healthy_id": "1UWH",
         "mutant_id": "3OG7",
@@ -171,8 +171,8 @@ HUMAN_CLINICAL_PRESETS = {
             "arm has no valid redocking reference."
         ),
         "clinical_note": (
-            "طفرة V600E تُحاكي حالة الفسفرة النشطة لإنزيم BRAF وتجعله نشطاً بشكل دائم محفزاً نمو الورم. "
-            "عقار Vemurafenib يثبط الإنزيم النشط انتقائياً ويحقق استجابة سريرية سريعة لدى مرضى الميلانوما."
+            "The V600E mutation mimics the active phosphorylated state of BRAF kinase, locking it into a constitutively active conformation that drives tumor proliferation. "
+            "Vemurafenib selectively inhibits the active kinase and achieves rapid clinical responses in melanoma patients."
         ),
         "limitations": [
             "1UWH contains sorafenib, not vemurafenib; the healthy arm cannot be validated against this drug.",
@@ -180,8 +180,8 @@ HUMAN_CLINICAL_PRESETS = {
         ],
     },
     "covid_mpro_paxlovid": {
-        "title": "🦠 الفيروسات التنفسية: بروتياز كورونا مع دواء Paxlovid (Nirmatrelvir)",
-        "category": "الأمراض المعدية والفيروسات (Infectious Diseases)",
+        "title": "🦠 Respiratory Viruses: SARS-CoV-2 Main Protease with Paxlovid (Nirmatrelvir)",
+        "category": "Infectious Diseases",
         "target_name": "SARS-CoV-2 Main Protease (Mpro)",
         "healthy_id": "7VH8",
         "mutant_id": "8D4N",
@@ -201,8 +201,8 @@ HUMAN_CLINICAL_PRESETS = {
             "so only the healthy arm can be redocking-validated."
         ),
         "clinical_note": (
-            "إنزيم Mpro أساسي لتضاعف الفيروس عبر تقطيع متعدد البروتين. "
-            "يرتبط عقار Nirmatrelvir بـ Cys145 و His41 مثبطاً عمل الإنزيم بصورة فعالة لتقليل شدة المرض."
+            "The Mpro (Main Protease) enzyme is essential for viral replication via polyprotein cleavage. "
+            "Nirmatrelvir targets the catalytic dyad Cys145 and His41, potently inhibiting protease activity to reduce disease severity."
         ),
         "limitations": [
             "Nirmatrelvir is covalent; Vina cannot model the Cys145 adduct and scores only a non-covalent approximation.",

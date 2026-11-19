@@ -80,7 +80,7 @@ def fetch_drug_from_pubchem(drug_name: str, timeout: int = 5) -> dict:
     """
     clean_name = drug_name.strip()
     if not clean_name:
-        return {"success": False, "error": "يرجى إدخال اسم الدواء للبحث."}
+        return {"success": False, "error": "Please enter a drug name to search."}
 
     norm_key = clean_name.lower()
 
@@ -120,7 +120,7 @@ def fetch_drug_from_pubchem(drug_name: str, timeout: int = 5) -> dict:
             }
         return {
             "success": False,
-            "error": f"تعذر جلب بيانات الدواء '{clean_name}' من PubChem ({e}). تأكد من صحة الاسم باللغة الإنجليزية أو الاتصال بالإنترنت."
+            "error": f"Could not fetch compound data for '{clean_name}' from PubChem ({e}). Please verify the English compound name or your internet connection."
         }
 
     # Fallback to cache if empty live response
@@ -136,4 +136,4 @@ def fetch_drug_from_pubchem(drug_name: str, timeout: int = 5) -> dict:
             "source": "Offline Clinical Pharmacopoeia"
         }
 
-    return {"success": False, "error": f"لم يتم العثور على مركب كيميائي مسجل باسم '{clean_name}' في PubChem."}
+    return {"success": False, "error": f"No chemical compound named '{clean_name}' was found in PubChem."}

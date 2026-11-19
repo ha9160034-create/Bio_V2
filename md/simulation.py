@@ -87,10 +87,12 @@ class SimulationConfig:
     ligand_restraint_fc: float = 1000.0  # kJ/(mol*nm^2)
     random_seed: int = 42
     grompp_maxwarn: int = 2
-    # Number of independent production trajectories.  With >1, extra
-    # trajectories start from the same equilibrated NPT checkpoint but with
-    # independent Maxwell-Boltzmann velocities (see manifest replication_note).
-    n_replicates: int = 1
+    # Number of independent production trajectories.  Defaults to 3, the lower
+    # bound of the 3-5 independent replicates recommended by LiveCoMS.  Extra
+    # trajectories start from the same EM structure and repeat NVT, NPT, and
+    # production with independent Maxwell-Boltzmann velocities (see
+    # manifest replication_note).
+    n_replicates: int = 3
     # Fraction of the production trajectory discarded as equilibration/burn-in
     # when reporting mean RMSD/H-bond metrics.
     analysis_burn_in_fraction: float = 0.2
@@ -606,7 +608,7 @@ class BiophysicalMDSimulator:
 
     def _mdrun(self, deffnm: str, stage_label: str) -> None:
         # Production MD may legitimately take hours: no timeout by default.
-        self._gmx(["mdrun", "-deffnm", deffnm], log_name=f"mdrun_{deffnm}", timeout=None)
+        self._gmx(["mdrun", "-deffnm", deffnm, "-ntmpi", "1"], log_name=f"mdrun_{deffnm}", timeout=None)
 
     def _stage_topology(self, topology: TopologyResult) -> TopologyResult:
         """Copy topology inputs into the run directory (self-contained run)."""
@@ -706,12 +708,12 @@ class BiophysicalMDSimulator:
             )
             raise SimulationError(manifest["error"])
 
-        update("التحقق من ملفات الطوبولوجيا وإعداد دليل التشغيل...", 0.02)
+        update("Verifying topology files and staging the run directory...", 0.02)
         try:
             staged = self._stage_topology(topology)
             mdp = self._write_mdp_files()
 
-            update("توليد سكربتات إعادة الإنتاج (Bash/Batch)...", 0.05)
+            update("Generating reproducibility scripts (Bash/Batch)...", 0.05)
             script_paths = generate_standalone_scripts(
                 output_dir=out,
                 complex_gro=staged.complex_gro.name,
@@ -747,21 +749,21 @@ class BiophysicalMDSimulator:
         failed_stage = "gromacs_execution"
 
         try:
-            update("إنشاء صندوق اثنا عشري معيني (editconf)...", 0.10)
+            update("Creating rhombic dodecahedron simulation box (editconf)...", 0.10)
             self._gmx(
                 ["editconf", "-f", staged.complex_gro.name, "-o", "newbox.gro",
                  "-bt", cfg.box_type, "-d", str(cfg.box_distance_nm)],
                 log_name="editconf",
             )
 
-            update("إذابة النظام في الماء الصريح (solvate)...", 0.18)
+            update("Solvating complex in explicit water (solvate)...", 0.18)
             self._gmx(
                 ["solvate", "-cp", "newbox.gro", "-cs", solvent_coordinate_file(cfg.water_model),
                  "-p", staged.topol_top.name, "-o", "solv.gro"],
                 log_name="solvate",
             )
 
-            update("إضافة الأيونات الفسيولوجية (genion)...", 0.26)
+            update("Adding physiological counter-ions (genion)...", 0.26)
             self._gmx(
                 ["grompp", "-f", mdp["ions.mdp"].name, "-c", "solv.gro",
                  "-p", staged.topol_top.name, "-o", "ions.tpr",
@@ -776,7 +778,7 @@ class BiophysicalMDSimulator:
                 input_text="SOL\n",
             )
 
-            update("بناء مجموعات الفهرس من النظام الفعلي (index.ndx)...", 0.32)
+            update("Building atom index groups from the solvated system — NDX (Atom Index File)...", 0.32)
             failed_stage = "index_generation"
             group_sizes = write_index_from_gro(
                 out / "solv_ions.gro", out / "index.ndx", ligand_resname=staged.ligand_resname
@@ -784,7 +786,7 @@ class BiophysicalMDSimulator:
             failed_stage = "gromacs_execution"
             logger.info("Index groups: %s", group_sizes)
 
-            update("تقليل الطاقة (Energy Minimization)...", 0.40)
+            update("Running EM (Energy Minimization)...", 0.40)
             self._gmx(
                 ["grompp", "-f", mdp["em.mdp"].name, "-c", "solv_ions.gro",
                  "-p", staged.topol_top.name, "-o", "em.tpr",
@@ -793,7 +795,11 @@ class BiophysicalMDSimulator:
             )
             self._mdrun("em", "EM")
 
-            update("التوازن الحراري NVT (v-rescale)...", 0.55)
+            update(
+                "Running NVT (Canonical Ensemble: Constant Particles, Volume, and Temperature) "
+                "equilibration with v-rescale (Bussi Stochastic Velocity-Rescaling Thermostat)...",
+                0.55,
+            )
             self._gmx(
                 ["grompp", "-f", mdp["nvt.mdp"].name, "-c", "em.gro", "-r", "em.gro",
                  "-p", staged.topol_top.name, "-n", "index.ndx", "-o", "nvt.tpr",
@@ -802,7 +808,11 @@ class BiophysicalMDSimulator:
             )
             self._mdrun("nvt", "NVT")
 
-            update("التوازن الضغطي NPT (Berendsen أثناء التوازن فقط)...", 0.70)
+            update(
+                "Running NPT (Isothermal–Isobaric Ensemble: Constant Particles, Pressure, and Temperature) "
+                "equilibration (Berendsen barostat for equilibration only)...",
+                0.70,
+            )
             self._gmx(
                 ["grompp", "-f", mdp["npt.mdp"].name, "-c", "nvt.gro", "-t", "nvt.cpt",
                  "-r", "nvt.gro", "-p", staged.topol_top.name, "-n", "index.ndx",
@@ -812,7 +822,11 @@ class BiophysicalMDSimulator:
             self._mdrun("npt", "NPT")
 
             if cfg.nve_duration_ps > 0:
-                update("فحص انحراف الطاقة NVE بعد التوازن (بدون ترموستات/باروستات)...", 0.78)
+                update(
+                    "Running NVE (Microcanonical Ensemble: Constant Particles, Volume, and Energy) "
+                    "energy-drift check without thermostat or barostat...",
+                    0.78,
+                )
                 self._gmx(
                     ["grompp", "-f", mdp["nve.mdp"].name, "-c", "npt.gro", "-t", "npt.cpt",
                      "-p", staged.topol_top.name, "-n", "index.ndx", "-o", "nve.tpr",
@@ -822,7 +836,7 @@ class BiophysicalMDSimulator:
                 self._mdrun("nve", "NVE")
                 nve_summary = self._extract_nve_drift(warnings)
 
-            update("محاكاة الإنتاج غير المقيدة (Parrinello-Rahman)...", 0.80)
+            update("Running unrestrained production MD (Molecular Dynamics) with Parrinello-Rahman barostat...", 0.80)
             self._gmx(
                 ["grompp", "-f", mdp["md.mdp"].name, "-c", "npt.gro", "-t", "npt.cpt",
                  "-p", staged.topol_top.name, "-n", "index.ndx", "-o", "prod_md.tpr",
@@ -831,7 +845,7 @@ class BiophysicalMDSimulator:
             )
             self._mdrun("prod_md", "Production")
 
-            update("معالجة شروط الحدود الدورية (trjconv -pbc mol)...", 0.90)
+            update("Applying PBC (Periodic Boundary Conditions) re-wrapping (trjconv -pbc mol)...", 0.90)
             self._gmx(
                 ["trjconv", "-s", "prod_md.tpr", "-f", "prod_md.xtc",
                  "-n", "index.ndx", "-o", "prod_md_center.xtc",
@@ -854,7 +868,7 @@ class BiophysicalMDSimulator:
                 input_text="Backbone\nProtein_Ligand\n",
             )
 
-            update("حساب RMSD وRMSF من المسار الفعلي...", 0.94)
+            update("Computing RMSD (Root-Mean-Square Deviation) and RMSF (Root-Mean-Square Fluctuation) from the real trajectory...", 0.94)
             self._gmx(
                 ["rms", "-s", "em.tpr", "-f", "prod_md_fit.xtc", "-n", "index.ndx",
                  "-o", "rmsd_ligand.xvg", "-tu", "ns"],
@@ -868,7 +882,7 @@ class BiophysicalMDSimulator:
                 input_text="Protein\n",
             )
 
-            update("تحليل الروابط الهيدروجينية (gmx hbond)...", 0.96)
+            update("Analyzing H-bond (Hydrogen Bond) contacts (gmx hbond)...", 0.96)
             try:
                 # GROMACS >= 2024 ships a new selection-based `hbond` that can
                 # miss GAFF/AMBER ligand donors because it infers elements from
@@ -893,7 +907,7 @@ class BiophysicalMDSimulator:
                 except GromacsExecutionError as exc:
                     warnings.append(f"H-bond analysis failed: {str(exc)[:500]}")
 
-            update("استخراج الطاقة والكثافة من ملف الطاقة (gmx energy)...", 0.98)
+            update("Extracting energy and density timeseries from EDR (Portable Energy File) via gmx energy...", 0.98)
             energy_summary = self._extract_energy_summary(warnings)
 
             # Primary trajectory summary plus independent production replicates.
@@ -904,7 +918,7 @@ class BiophysicalMDSimulator:
             )
             for replicate_index in range(2, n_replicates + 1):
                 update(
-                    f"محاكاة إنتاج مستقلة (replicate {replicate_index}/{n_replicates})...",
+                    f"Running independent production replicate ({replicate_index}/{n_replicates})...",
                     0.98 + (0.01 * replicate_index / max(n_replicates, 1)),
                 )
                 replicate_stats.append(
@@ -944,7 +958,7 @@ class BiophysicalMDSimulator:
             self._write_failed_manifest(message, stage="artifact_verification")
             raise SimulationError(message)
 
-        update("اكتملت المحاكاة والتحليل بنجاح.", 1.00)
+        update("MD (Molecular Dynamics) simulation and trajectory analysis completed successfully.", 1.00)
 
         def _aggregate(values: List[Optional[float]]) -> Dict[str, Any]:
             clean = [float(value) for value in values if value is not None]

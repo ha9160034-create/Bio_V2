@@ -790,6 +790,8 @@ printf "Protein\\nSystem\\n" | $GMX trjconv -s {production_prefix}.tpr -f {produ
 printf "Backbone\\nProtein_Ligand\\n" | $GMX trjconv -s {production_prefix}.tpr -f {production_prefix}_center.xtc -n {index_ndx} -o {production_prefix}_fit.xtc -fit rot+trans
 
 {bash_replicates}
+echo ">>> [Finalize] Writing md_manifest.json..."
+$PYTHON finalize_md_run.py --run-dir .
 echo "=========================================================="
 echo " Simulation and PBC post-processing completed successfully!"
 echo "=========================================================="
@@ -855,6 +857,9 @@ echo [Step 10/10] PBC Re-wrapping (trjconv -pbc mol -ur compact)...
 (echo Backbone & echo Protein_Ligand) | %GMX% trjconv -s {production_prefix}.tpr -f {production_prefix}_center.xtc -n {index_ndx} -o {production_prefix}_fit.xtc -fit rot+trans
 
 {bat_replicates}
+echo Finalizing md_manifest.json...
+%PYTHON% finalize_md_run.py --run-dir .
+if errorlevel 1 exit /b %errorlevel%
 echo ==========================================================
 echo  Simulation completed!
 echo ==========================================================

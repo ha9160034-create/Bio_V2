@@ -114,8 +114,8 @@ class Program {
 
         if (chk != 0) {
             MessageBox.Show(
-                "يرجى فتح برنامج Docker Desktop أولاً والانتظار حتى يعمل المحرك (Engine running)، ثم أعد تشغيل البرنامج.\n\n" + errStr,
-                "BIOBIO - تنبيه التشغيل",
+                "Please launch Docker Desktop first and wait until the Docker Engine is running, then restart the application.\n\n" + errStr,
+                "BIOBIO — Startup Notice",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning
             );
@@ -130,7 +130,7 @@ class Program {
         splash.BackColor = Color.FromArgb(15, 23, 42);
 
         Label titleLbl = new Label();
-        titleLbl.Text = "BIOBIO — Molecular Docking & MD Suite";
+        titleLbl.Text = "BIOBIO — Molecular Docking & MD (Molecular Dynamics) Suite";
         titleLbl.ForeColor = Color.FromArgb(56, 189, 248);
         titleLbl.Font = new Font("Segoe UI", 13, FontStyle.Bold);
         titleLbl.AutoSize = false;
@@ -139,7 +139,7 @@ class Program {
         titleLbl.Height = 70;
 
         Label statusLbl = new Label();
-        statusLbl.Text = "جاري فحص وتجهيز المحرك الفيزيائي...";
+        statusLbl.Text = "Checking and initializing the physics simulation engine...";
         statusLbl.ForeColor = Color.White;
         statusLbl.Font = new Font("Segoe UI", 10, FontStyle.Regular);
         statusLbl.AutoSize = false;
@@ -152,7 +152,7 @@ class Program {
         Application.DoEvents();
 
         if (RunCmd(dockerExe, "image inspect " + IMAGE_NAME, out outStr, out errStr) != 0) {
-            statusLbl.Text = "جاري تحميل محرك BIOBIO لأول مرة من السحابة...\n(يرجى الانتظار ريثما يكتمل التحميل)";
+            statusLbl.Text = "Downloading the BIOBIO simulation engine from the cloud for the first time...\n(Please wait until the download completes)";
             Application.DoEvents();
             int pullCode = -1;
             Thread pullThread = new Thread(() => {
@@ -167,22 +167,22 @@ class Program {
             }
             if (pullCode != 0) {
                 splash.Close();
-                MessageBox.Show("تعذر تحميل المحرك من السحابة:\n" + errStr, "BIOBIO Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show("Failed to download the simulation engine from the cloud:\n" + errStr, "BIOBIO Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
         }
 
-        statusLbl.Text = "جاري تشغيل المحرك الفيزيائي (GROMACS + Vina + ACPYPE)...";
+        statusLbl.Text = "Starting the physics simulation engine:\nGROMACS (GROningen MAchine for Chemical Simulations) +\nVina (AutoDock Vina Molecular Docking Engine) +\nACPYPE (AnteChamber PYthon Parser interfacE)...";
         Application.DoEvents();
 
         string digestDetail;
         if (!VerifyPinnedImage(dockerExe, out digestDetail)) {
             splash.Close();
             MessageBox.Show(
-                "فشل التحقق من بصمة صورة BIOBIO (digest).\n" +
-                "هذا يعني أن الصورة تغيّرت أو أن الوسم أُعيد توجيهه، ولن يُسمح بالتشغيل.\n\n" +
+                "BIOBIO container image digest verification failed.\n" +
+                "This indicates that the image has been modified or the tag was redirected; execution will not be permitted.\n\n" +
                 digestDetail,
-                "BIOBIO - تحقق أمني",
+                "BIOBIO — Security Verification",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error
             );
@@ -204,7 +204,7 @@ class Program {
 
         if (RunCmd(dockerExe, runArgs, out outStr, out errStr) != 0) {
             splash.Close();
-            MessageBox.Show("تعذر بدء حاوية البرنامج:\n" + errStr, "BIOBIO Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show("Failed to start the application container:\n" + errStr, "BIOBIO Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;
         }
 
@@ -229,13 +229,13 @@ class Program {
 
         if (!ready) {
             RunCmd(dockerExe, "logs " + CONTAINER_NAME, out outStr, out errStr);
-            MessageBox.Show("تأخر استجابة المحرك:\n" + outStr + "\n" + errStr, "BIOBIO Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show("The simulation engine took too long to respond:\n" + outStr + "\n" + errStr, "BIOBIO Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             RunCmd(dockerExe, "rm -f " + CONTAINER_NAME, out outStr, out errStr);
             return;
         }
 
-        // فتح نافذة البرنامج الأصلية عبر pywebview مباشرة بدون أي ملفات خارجية وبدون فتح متصفح Brave
-        string pyCode = "import webview; webview.create_window('BIOBIO — Molecular Docking & MD Suite', 'http://localhost:8501', width=1440, height=920, min_size=(1024, 700)); webview.start()";
+        // Launch the native application window directly via pywebview without external files or opening a browser
+        string pyCode = "import webview; webview.create_window('BIOBIO — Molecular Docking & MD (Molecular Dynamics) Suite', 'http://localhost:8501', width=1440, height=920, min_size=(1024, 700)); webview.start()";
         ProcessStartInfo wpsi = new ProcessStartInfo("pythonw", "-c \"" + pyCode + "\"");
         wpsi.UseShellExecute = false;
         wpsi.CreateNoWindow = true;

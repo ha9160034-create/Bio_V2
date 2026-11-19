@@ -11,7 +11,7 @@ import streamlit as st
 from analysis.constants import AA_3TO1, AA_PROPS
 
 def structure_to_pdb_str(structure):
-    """تحويل كائن Structure الخاص بـ Biopython إلى نص PDB صالح للعرض والتحليل."""
+    """Convert a Biopython Structure object to a PDB (Protein Data Bank) format string for display and analysis."""
     try:
         io = PDBIO()
         io.set_structure(structure)
@@ -77,21 +77,21 @@ def process_protein_structure(
         return None
 
 def get_all_chains(structure):
-    """استخراج جميع معرفات السلاسل (Chains) الموجودة في بنية البروتين."""
+    """Extract all chain identifiers present in the protein structure."""
     try:
         return [chain.id for chain in structure[0]]
     except Exception as ex:
-        st.error(f"فشل قراءة السلاسل: {ex}")
+        st.error(f"Failed to read chains: {ex}")
         return []
 
 def get_protein_sequence(structure, chain_id):
-    """استخراج تسلسل الأحماض الأمينية لسلسلة محددة مع أرقامها التسلسلية."""
+    """Extract the amino acid sequence and residue numbers for a specified chain."""
     sequence = []
     try:
         model = structure[0]
         if chain_id in [c.id for c in model]:
             for residue in model[chain_id]:
-                if residue.id[0] == ' ':  # التأكد من أنه حمض أميني حقيقي
+                if residue.id[0] == ' ':  # Ensure residue is a standard amino acid
                     resname = residue.get_resname()
                     icode = str(residue.id[2]).strip().upper()
                     sequence.append({
@@ -102,11 +102,11 @@ def get_protein_sequence(structure, chain_id):
                         'one_letter': AA_3TO1.get(resname, 'X')
                     })
     except Exception as ex:
-        st.error(f"فشل قراءة التسلسل للسلسلة {chain_id}: {ex}")
+        st.error(f"Failed to read sequence for chain {chain_id}: {ex}")
     return sequence
 
 def sequence_to_fasta(structure, chain_id, protein_name="protein"):
-    """تحويل تسلسل الأحماض الأمينية إلى تنسيق FASTA القياسي."""
+    """Convert an amino acid sequence to standard FASTA (Fast-All Sequence Format)."""
     seq_data = get_protein_sequence(structure, chain_id)
     if not seq_data:
         return None
@@ -193,7 +193,7 @@ def calculate_all_distances(
         return []
 
 def calculate_sasa_map(structure, chain_id):
-    """حساب مساحة السطح المعرضة للمذيب (SASA) وإنشاء خريطة تربط رقم الحمض بقيمته."""
+    """Calculate Solvent-Accessible Surface Area (SASA) and build a residue-ID-to-SASA map."""
     try:
         sasa_map = {}
         for res in structure[0][chain_id]:

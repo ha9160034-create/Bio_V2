@@ -139,10 +139,16 @@ class TestMDReviewRegressions(unittest.TestCase):
                     app.run(timeout=30)
                 self.assertFalse(app.exception, [str(item.value) for item in app.exception])
                 metrics = {item.label: item for item in app.metric}
-                self.assertEqual(metrics["متوسط RMSD للدواء"].value, "0.00 Å" if has_data else "غير متاح")
-                self.assertEqual(metrics["متوسط الروابط الهيدروجينية"].value, "0.0" if has_data else "غير متاح")
+                self.assertEqual(
+                    metrics["Mean Ligand RMSD (Root-Mean-Square Deviation)"].value,
+                    "0.00 Å" if has_data else "Not available",
+                )
+                self.assertEqual(
+                    metrics["Mean H-bond (Hydrogen Bond) Count"].value,
+                    "0.0" if has_data else "Not available",
+                )
                 if not has_data:
-                    self.assertFalse(metrics["متوسط RMSD للدواء"].delta)
+                    self.assertFalse(metrics["Mean Ligand RMSD (Root-Mean-Square Deviation)"].delta)
 
 
 if __name__ == "__main__":

@@ -15,9 +15,9 @@ VINA_LINUX = PROJECT_ROOT / "tools" / "vina" / "vina"
 BASE_RUNS_DIR = PROJECT_ROOT / "docking_runs"
 
 DISCLAIMER_TEXT = (
-    "تنبيه علمي: هذه النتائج تمثل فرضية ارتباط حاسوبية (In-Silico Docking Hypothesis) "
-    "تهدف لترتيب الوضعيات والمركبات ضمن هذا البروتوكول المحدد. "
-    "لا تُعد هذه الدرجات قياساً معملياً لطاقة الارتباط الحرة أو دليلاً على الفاعلية السريرية أو الجرعة العلاجية."
+    "Scientific Disclaimer: These results represent an in-silico molecular docking hypothesis "
+    "intended for ranking poses and compounds within this specific protocol. "
+    "These scores do not constitute experimental binding free-energy measurements or evidence of clinical efficacy or therapeutic dosage."
 )
 
 # Pinned Vina binaries (PLAN.md §1.2). The Linux hash is enforced: a container

@@ -9,6 +9,34 @@ _HET_ELEMENT_CODES = {"CL", "BR", "NA", "MG", "ZN", "FE", "CA", "MN", "CU", "K",
 _HEME_RESNAMES = {"HEM", "HEC", "HEB", "HEA"}
 
 
+def filter_pdb_chain(pdb_text: str, chain_id: str) -> str:
+    """Keep only coordinate records belonging to ``chain_id``.
+
+    Multi-chain PDB entries (for example 2JIT, which contains chains A and B)
+    must be reduced to the validated chain before docking; otherwise Vina can
+    place the ligand in the second chain's pocket while the search box and the
+    matched-pair mapping refer to the first chain.
+    """
+    if not chain_id:
+        return pdb_text
+    metadata_records = {
+        "HEADER", "TITLE", "COMPND", "SOURCE", "KEYWDS", "EXPDTA", "AUTHOR",
+        "REVDAT", "JRNL", "REMARK", "CRYST1", "ORIGX1", "ORIGX2", "ORIGX3",
+        "SCALE1", "SCALE2", "SCALE3", "SEQRES", "HELIX", "SHEET", "SSBOND",
+        "LINK", "CISPEP", "MODRES",
+    }
+    kept: list[str] = []
+    for line in pdb_text.splitlines():
+        record = line[:6].strip()
+        if record in {"ATOM", "HETATM", "TER"}:
+            if len(line) > 21 and line[21] == chain_id:
+                kept.append(line)
+        elif record in metadata_records:
+            kept.append(line)
+    kept.append("END")
+    return "\n".join(kept) + "\n"
+
+
 def _infer_element_from_context(record: str, atom_name: str, resname: str) -> str:
     """Infer an element symbol without the classic ``CA`` = calcium trap.
 

@@ -98,7 +98,7 @@ class TestMDResultsAppTest(unittest.TestCase):
                 app.run(timeout=60)
 
         self.assertFalse(app.exception, [str(item.value) for item in app.exception])
-        self.assertTrue(any("نتائج المسار الفعلي" in str(item.value) for item in app.subheader))
+        self.assertTrue(any("Real Trajectory Results" in str(item.value) for item in app.subheader))
         warnings = " ".join(str(item.value) for item in app.warning)
         self.assertIn("MM-PB(GB)SA", warnings)
 

@@ -4,18 +4,18 @@ import streamlit as st
 from analysis.constants import AA_PROPS, AA_1TO3, AA_VOLUMES
 
 def analyze_impact(h_res, m_res, h_sasa, m_sasa):
-    """تحليل التأثير العلمي للطفرة بناءً على الخواص الكيميائية ومساحة السطح (SASA)."""
-    # التعامل مع حالات الحذف والإضافة (Indels) بشكل صحيح بيولوجياً
+    """Analyze the biochemical and structural impact of a mutation based on physicochemical properties and SASA (Solvent-Accessible Surface Area)."""
+    # Handle insertions and deletions (indels) in a biologically accurate manner
     if h_res == '-' and m_res != '-':
         return "Residue Insertion (Critical Structural Shift)"
     if h_res != '-' and m_res == '-':
         return "Residue Deletion (Critical Structural Shift)"
     
-    # تحويل الأكواد الأحادية إلى ثلاثية إن وجدت
+    # Convert 1-letter codes to 3-letter codes when provided
     h_code = AA_1TO3.get(h_res.upper(), h_res.upper()) if len(h_res) == 1 else h_res.upper()
     m_code = AA_1TO3.get(m_res.upper(), m_res.upper()) if len(m_res) == 1 else m_res.upper()
 
-    # إذا كان الحَمضان متطابقين تماماً فلا توجد طفرة
+    # Identical residues indicate no mutation
     if h_code == m_code:
         return "Identical (No Mutation)"
     
@@ -24,7 +24,7 @@ def analyze_impact(h_res, m_res, h_sasa, m_sasa):
     
     impacts = []
     
-    # 1. تحليل الشحنة الكهربائية والتغير الكيميائي
+    # 1. Charge and chemical class analysis
     is_h_acidic = "Acidic" in h_type
     is_m_acidic = "Acidic" in m_type
     is_h_basic = "Basic" in h_type
@@ -41,48 +41,48 @@ def analyze_impact(h_res, m_res, h_sasa, m_sasa):
     elif h_type != m_type:
         impacts.append(f"Chem-Class Change ({h_type} ➔ {m_type})")
 
-    # 2. تغير الأروماتية (Aromaticity Change: Pi-Stacking)
+    # 2. Aromaticity change (pi-stacking)
     is_h_arom = "Aromatic" in h_type
     is_m_arom = "Aromatic" in m_type
     if is_h_arom != is_m_arom:
         impacts.append("Aromaticity Change (Pi-Stacking Risk)")
     
-    # 3. روابط ثنائي الكبريت (Disulfide Bond Risk)
+    # 3. Disulfide bond risk
     if h_code == 'CYS' or m_code == 'CYS':
         impacts.append("Disulfide Bond Risk (Critical)")
     
-    # 4. تأثير البرولين وتكسير الحلزونات (Helix Breaker)
+    # 4. Proline substitution (helix breaker)
     if (h_code == 'PRO') != (m_code == 'PRO'):
         impacts.append("Proline Substitution (Helix Breaker)")
     
-    # 5. مرونة الجلايسين (Glycine Flexibility)
+    # 5. Glycine flexibility
     if (h_code == 'GLY') != (m_code == 'GLY'):
         impacts.append("Glycine Flexibility Shift")
 
-    # 6. التغير الحجمي الفراغي (Steric Volume Change)
+    # 6. Steric volume change
     h_vol = AA_VOLUMES.get(h_code)
     m_vol = AA_VOLUMES.get(m_code)
     if h_vol is not None and m_vol is not None:
         delta_vol = m_vol - h_vol
         if delta_vol >= 55.0:
-            impacts.append(f"Steric Bulk Increase (+{delta_vol:.0f} Å³ Clash Risk)")
+            impacts.append(f"Steric Bulk Increase (+{delta_vol:.0f} Å³ [cubic Angstroms] Clash Risk)")
         elif delta_vol <= -55.0:
-            impacts.append(f"Steric Void Creation ({delta_vol:.0f} Å³)")
+            impacts.append(f"Steric Void Creation ({delta_vol:.0f} Å³ [cubic Angstroms])")
 
-    # 7. تحليل مساحة السطح والموقع الهيكلي (SASA & Structural Environment)
+    # 7. SASA (Solvent-Accessible Surface Area) and structural environment
     try:
         diff_sasa = m_sasa - h_sasa
         if h_sasa < 15.0:
-            # الحمض مدفون في لب البروتين (Core residue)
+            # Buried core residue
             if is_m_charged or (h_vol and m_vol and abs(m_vol - h_vol) >= 50):
                 impacts.append("Buried Core Mutation (High Destabilization Risk)")
             else:
                 impacts.append("Core Mutation")
 
         if diff_sasa >= 15.0:
-            impacts.append("Increased Exposure (+ΔSASA)")
+            impacts.append("Increased Exposure (+ΔSASA — Solvent-Accessible Surface Area)")
         elif diff_sasa <= -15.0:
-            impacts.append("Increased Burial (-ΔSASA)")
+            impacts.append("Increased Burial (-ΔSASA — Solvent-Accessible Surface Area)")
     except Exception:
         pass
         
@@ -137,7 +137,7 @@ def calculate_sequence_identity(aligned_a: str, aligned_b: str) -> dict:
 
 
 def get_alignment(seq1, seq2, mode='global'):
-    """إجراء محاذاة تسلسلية (Sequence Alignment) بين بروتينين وحساب النتيجة باستخدام خوارزميات Biopython مع مصفوفة BLOSUM62."""
+    """Perform pairwise sequence alignment between two proteins and compute the score using Biopython with the BLOSUM62 matrix."""
     aligner = PairwiseAligner()
     aligner.mode = mode
     try:
@@ -153,10 +153,10 @@ def get_alignment(seq1, seq2, mode='global'):
 
     try:
         best_aln = aligner.align(seq1, seq2)[0]
-        # استخراج سلاسل المحاذاة مع الفجوات (-) بشكل دقيق من الكائن مباشرة
+        # Extract aligned sequences with gaps (-) directly from the alignment object
         aligned_h = best_aln[0, :]
         aligned_m = best_aln[1, :]
         return str(best_aln), best_aln.score, aligned_h, aligned_m
     except Exception as error:
-        st.warning(f"فشل إجراء المحاذاة التسلسلية: {error}")
+        st.warning(f"Sequence alignment failed: {error}")
         return "", 0, "", ""

@@ -102,7 +102,7 @@ streamlit run app.py
 python -c "import analysis; import docking; print('All modules loaded successfully!')"
 ```
 
-### 2. تشغيل حزمة الاختبارات الآلية (149 اختباراً؛ 6 منها تكامل GROMACS اختياري):
+### 2. تشغيل حزمة الاختبارات الآلية (182 اختباراً؛ 7 منها تكامل GROMACS اختياري):
 ```bash
 python -m unittest discover tests
 ```

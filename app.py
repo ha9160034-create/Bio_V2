@@ -21,9 +21,9 @@ def main():
     st.title("🧬 Bio-Impact Analyzer")
 
     tab1, tab2, tab3 = st.tabs([
-        "🧬 التحليل الهيكلي والمقارنة",
-        "💊 محاكاة الارتباط (Docking)",
-        "🔬 محاكاة الديناميكا الجزيئية (Molecular Dynamics)"
+        "🧬 Tab 1: Structural & Mutational Analysis (PDB — Protein Data Bank)",
+        "💊 Tab 2: Molecular Docking Simulation (AutoDock Vina)",
+        "🔬 Tab 3: Molecular Dynamics Simulation (MD — GROMACS Pipeline)"
     ])
 
     with tab1:

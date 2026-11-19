@@ -14,7 +14,7 @@ from rdkit.Geometry import Point3D
 from docking.models import GridBox, PoseCluster
 from docking.engine import get_vina_version, run_vina_multi_seeds
 from docking.binding_site import define_grid_from_residues
-from docking.receptor_prep import prepare_receptor
+from docking.receptor_prep import filter_pdb_chain, prepare_receptor
 from docking.ligand_prep import prepare_ligand_from_smiles
 from docking.validation import (
     cluster_poses_across_seeds,
@@ -87,28 +87,72 @@ def _protein_ca_map(pdb_path: Path) -> dict[tuple[str, int, str], np.ndarray]:
     return coords
 
 
+def _residue_key_parts(key: str) -> tuple[str, int] | None:
+    """Parse a validated-pair mapping key such as ``A:672``."""
+    raw = str(key).strip()
+    if ":" not in raw:
+        return None
+    chain, residue = raw.split(":", 1)
+    digits = "".join(ch for ch in residue if ch.isdigit())
+    if not digits:
+        return None
+    return chain.strip(), int(digits)
+
+
 def superimpose_receptors(
     healthy_pdb: Path,
     mutant_pdb: Path,
+    residue_mapping: dict | None = None,
     min_common_ca: int = 30,
+    focus_point: np.ndarray | None = None,
+    focus_radius: float = 15.0,
 ) -> dict | None:
     """Superimpose two receptor structures on shared C-alpha atoms.
 
     Matched docking compares a WT and a variant of the same protein, so a rigid
-    C-alpha superposition is valid.  Returns ``None`` when fewer than
-    ``min_common_ca`` equivalent residues exist (e.g. different chain naming).
+    C-alpha superposition is valid.  When the validated pair supplies a
+    residue mapping, that mapping is authoritative: the two PDB entries often
+    use different residue numbers (for example 1M17 starts at 672 while 2JIT
+    starts at 696), so matching by residue number alone would align unrelated
+    residues and produce a meaningless RMSD.  Returns ``None`` when fewer than
+    ``min_common_ca`` equivalent residues exist.
     """
     try:
         healthy_ca = _protein_ca_map(healthy_pdb)
         mutant_ca = _protein_ca_map(mutant_pdb)
     except Exception:
         return None
-    common = sorted(set(healthy_ca) & set(mutant_ca))
-    if len(common) < min_common_ca:
+
+    pairs: list[tuple[np.ndarray, np.ndarray]] = []
+    if residue_mapping:
+        for h_key, m_key in residue_mapping.items():
+            h_parts = _residue_key_parts(h_key)
+            m_parts = _residue_key_parts(m_key)
+            if h_parts is None or m_parts is None:
+                continue
+            h_lookup = (h_parts[0], h_parts[1], "")
+            m_lookup = (m_parts[0], m_parts[1], "")
+            if h_lookup in healthy_ca and m_lookup in mutant_ca:
+                pairs.append((healthy_ca[h_lookup], mutant_ca[m_lookup]))
+    if not pairs:
+        common = sorted(set(healthy_ca) & set(mutant_ca))
+        pairs = [(healthy_ca[key], mutant_ca[key]) for key in common]
+
+    scope = "global"
+    if focus_point is not None and pairs:
+        local_pairs = [
+            pair for pair in pairs
+            if float(np.linalg.norm(pair[0] - focus_point)) <= focus_radius
+        ]
+        if len(local_pairs) >= min_common_ca:
+            pairs = local_pairs
+            scope = "pocket_local"
+
+    if len(pairs) < min_common_ca:
         return None
 
-    fixed = np.asarray([healthy_ca[key] for key in common], dtype=float)
-    moving = np.asarray([mutant_ca[key] for key in common], dtype=float)
+    fixed = np.asarray([pair[0] for pair in pairs], dtype=float)
+    moving = np.asarray([pair[1] for pair in pairs], dtype=float)
     try:
         superimposer = SVDSuperimposer()
         superimposer.set(fixed, moving)
@@ -121,7 +165,10 @@ def superimpose_receptors(
         "rotation": np.asarray(rotation, dtype=float),
         "translation": np.asarray(translation, dtype=float),
         "receptor_rmsd_angstrom": round(rmsd, 3),
-        "common_ca": len(common),
+        "common_ca": len(pairs),
+        "mapping_source": "validated_pair" if residue_mapping else "residue_number",
+        "superposition_scope": scope,
+        "focus_radius_angstrom": focus_radius if scope == "pocket_local" else None,
     }
 
 
@@ -165,6 +212,7 @@ def evaluate_binding_mode_compatibility(
     healthy_pocket_residues: list[str] | None = None,
     mutant_pocket_residues: list[str] | None = None,
     rmsd_cutoff: float = 2.0,
+    residue_mapping: dict | None = None,
 ) -> tuple[bool | None, dict]:
     """Check that both consensus poses describe the same binding mode.
 
@@ -200,7 +248,21 @@ def evaluate_binding_mode_compatibility(
 
     superposition = None
     if healthy_receptor_pdb and mutant_receptor_pdb:
-        superposition = superimpose_receptors(Path(healthy_receptor_pdb), Path(mutant_receptor_pdb))
+        # Kinase domains consist of two lobes that can move relative to each
+        # other between crystal forms.  A global CA fit can therefore be poor
+        # even when the ATP-site geometry is conserved, so the superposition is
+        # restricted to CAs around the healthy pocket when that information is
+        # available.
+        focus_point = None
+        if healthy_pocket_residues:
+            focus_point = _pocket_centroid(Path(healthy_receptor_pdb), healthy_pocket_residues)
+        superposition = superimpose_receptors(
+            Path(healthy_receptor_pdb),
+            Path(mutant_receptor_pdb),
+            residue_mapping=residue_mapping,
+            focus_point=focus_point,
+            focus_radius=15.0,
+        )
 
     if superposition is not None:
         rotation = superposition["rotation"]
@@ -213,15 +275,47 @@ def evaluate_binding_mode_compatibility(
             conformer.SetAtomPosition(index, Point3D(float(coord[0]), float(coord[1]), float(coord[2])))
         try:
             pose_rmsd = float(rdMolAlign.CalcRMS(transformed, healthy_pose_mol))
-        except Exception as exc:
-            details["reason"] = f"Symmetry-aware ligand RMSD failed: {exc}"
-            return False, details
+            rmsd_method = "rdkit_symmetry_aware_calc_rms"
+        except Exception as exc:  # noqa: BLE001 - graph perception can differ between poses
+            # PDBQT carries no bond orders.  OpenBabel may perceive slightly
+            # different graphs for the two poses, which makes CalcRMS raise
+            # "No sub-structure match".  That is a perception limitation, not
+            # evidence of a different binding mode.  Fall back to the heavy-atom
+            # coordinate RMSD in the common receptor frame (atom order is shared
+            # because both poses come from the same prepared ligand).
+            conf_m = transformed.GetConformer()
+            conf_h = healthy_pose_mol.GetConformer()
+            n_atoms = min(transformed.GetNumAtoms(), healthy_pose_mol.GetNumAtoms())
+            if n_atoms == 0:
+                details["reason"] = f"Symmetry-aware ligand RMSD failed: {exc}"
+                details["evaluated"] = False
+                return None, details
+            squared = []
+            for index in range(n_atoms):
+                pm = conf_m.GetAtomPosition(index)
+                ph = conf_h.GetAtomPosition(index)
+                squared.append(
+                    (pm.x - ph.x) ** 2 + (pm.y - ph.y) ** 2 + (pm.z - ph.z) ** 2
+                )
+            pose_rmsd = float(np.sqrt(np.mean(squared)))
+            rmsd_method = (
+                "heavy_atom_euclidean_after_receptor_superposition "
+                "(symmetry-aware graph match unavailable)"
+            )
         details.update({
             "receptor_superposition_rmsd_angstrom": superposition["receptor_rmsd_angstrom"],
             "common_ca": superposition["common_ca"],
+            "receptor_ca_mapping": superposition.get("mapping_source"),
+            "superposition_scope": superposition.get("superposition_scope"),
+            "superposition_focus_radius_angstrom": superposition.get("focus_radius_angstrom"),
             "ligand_pose_rmsd_angstrom": round(pose_rmsd, 3),
+            "ligand_pose_rmsd_method": rmsd_method,
             "evaluated": True,
-            "method": "receptor_CA_superposition + symmetry-aware ligand RMSD",
+            "method": (
+                "pocket-local receptor_CA_superposition + symmetry-aware ligand RMSD"
+                if superposition.get("superposition_scope") == "pocket_local"
+                else "receptor_CA_superposition + symmetry-aware ligand RMSD"
+            ),
         })
         return pose_rmsd <= rmsd_cutoff, details
 
@@ -275,6 +369,30 @@ def validate_matched_conditions(
     return True, "Matched comparison conditions satisfied."
 
 
+def _seed_best_score_sd(poses) -> float | None:
+    """Return the SD of per-seed best Vina scores (run-to-run noise proxy)."""
+    by_seed: dict[int, float] = {}
+    for pose in poses:
+        current = by_seed.get(pose.seed)
+        if current is None or pose.score < current:
+            by_seed[pose.seed] = pose.score
+    values = list(by_seed.values())
+    if len(values) < 2:
+        return None
+    mean = sum(values) / len(values)
+    variance = sum((value - mean) ** 2 for value in values) / (len(values) - 1)
+    return variance ** 0.5
+
+
+def _combined_score_uncertainty(h_poses, m_poses) -> float | None:
+    """Conservative uncertainty of a ΔScore from per-arm seed variability."""
+    h_sd = _seed_best_score_sd(h_poses)
+    m_sd = _seed_best_score_sd(m_poses)
+    if h_sd is None or m_sd is None:
+        return None
+    return (h_sd ** 2 + m_sd ** 2) ** 0.5
+
+
 def _select_consensus_cluster(clusters: list[PoseCluster]) -> PoseCluster:
     if not clusters:
         raise ValueError("Matched comparison rejected: no pose clusters were produced.")
@@ -294,15 +412,25 @@ def verify_comparison_clusters(
     mutant_pocket_residues: list[str] | None = None,
     binding_mode_cutoff: float = 2.0,
     details: dict | None = None,
-) -> tuple[PoseCluster, PoseCluster, float, list[str]]:
+    residue_mapping: dict | None = None,
+    healthy_cluster: PoseCluster | None = None,
+    strict_binding_mode: bool = True,
+) -> tuple[PoseCluster, PoseCluster, float | None, list[str]]:
     """Select the consensus cluster of each arm and require a shared binding mode.
 
     A ΔScore is only meaningful when both consensus poses occupy the same
     binding mode.  The gate compares the two representative poses after
     superposing the mutant receptor onto the healthy receptor (symmetry-aware,
     no-fit ligand RMSD) and refuses the comparison otherwise.
+
+    ``healthy_cluster`` lets the caller supply a reference-guided healthy
+    cluster (the cluster containing the WT redocking top-1 pose) instead of the
+    largest cluster.  With ``strict_binding_mode=False`` an incompatible
+    binding mode does not raise; the function returns ``delta_score=None`` and
+    records ``binding_mode_status='not_evaluated'`` so the run can finish with
+    an explicit "no ΔScore" outcome.
     """
-    healthy_cluster = _select_consensus_cluster(h_clusters)
+    healthy_cluster = healthy_cluster or _select_consensus_cluster(h_clusters)
     mutant_cluster = _select_consensus_cluster(m_clusters)
 
     if healthy_cluster.seed_count < 2 or mutant_cluster.seed_count < 2:
@@ -324,15 +452,29 @@ def verify_comparison_clusters(
             healthy_pocket_residues=healthy_pocket_residues,
             mutant_pocket_residues=mutant_pocket_residues,
             rmsd_cutoff=binding_mode_cutoff,
+            residue_mapping=residue_mapping,
         )
         if details is not None:
             details.update(mode_details)
-        if compatible is False:
-            raise ValueError(
-                "Matched comparison rejected: the healthy and mutant consensus poses do not "
-                "represent the same binding mode, so a ΔScore would be uninterpretable. "
-                f"Details: {mode_details.get('reason', mode_details)}"
+            details["binding_mode_status"] = (
+                "compatible" if compatible is True else
+                "not_evaluated" if compatible is False else
+                "not_evaluated"
             )
+        if compatible is False:
+            if strict_binding_mode:
+                raise ValueError(
+                    "Matched comparison rejected: the healthy and mutant consensus poses do not "
+                    "represent the same binding mode, so a ΔScore would be uninterpretable. "
+                    f"Details: {mode_details.get('reason', mode_details)}"
+                )
+            warnings.append(
+                "Binding-mode gate not satisfied: the healthy and mutant consensus poses "
+                "differ by "
+                f"{mode_details.get('ligand_pose_rmsd_angstrom', 'an unknown RMSD')} Å "
+                f"(cutoff {binding_mode_cutoff:.1f} Å). ΔScore was not evaluated."
+            )
+            return healthy_cluster, mutant_cluster, None, warnings
         if compatible is None:
             message = (
                 "Binding-mode compatibility could not be evaluated for this pair "
@@ -350,6 +492,7 @@ def verify_comparison_clusters(
         if details is not None:
             details["reason"] = message
             details["method"] = "not_evaluated"
+            details["binding_mode_status"] = "not_evaluated"
 
     delta_score = round(mutant_cluster.median_score - healthy_cluster.median_score, 3)
     return healthy_cluster, mutant_cluster, delta_score, warnings
@@ -379,8 +522,13 @@ def run_matched_docking_comparison(
 ) -> dict:
     """
     Execute controlled matched docking comparison between healthy and mutant structures.
-    Refuses comparison unless all protocol settings match strictly and both dominant
+    Refuses comparison unless all protocol settings match strictly and both selected
     clusters have at least 2 independent supporting seeds.
+
+    A ΔScore is only emitted when the selected clusters pass the binding-mode gate.
+    When the gate fails, both manifests are still saved with
+    ``binding_mode_status="not_evaluated"`` and ``delta_score=None`` so the outcome
+    is auditable instead of being discarded.
 
     Accepts separate healthy and mutant pocket residue lists to accommodate chain ID
     differences or residue numbering shifts.
@@ -405,6 +553,14 @@ def run_matched_docking_comparison(
             "Matched comparison rejected: a validated homologous WT/variant pair is required. "
             "Run validate_matched_pair() first and pass its metadata as pair_validation_meta."
         )
+
+    # Multi-chain entries (e.g. 2JIT chains A and B) must be reduced to the
+    # validated chain; otherwise the ligand can dock into the other copy while
+    # the grid and the pair mapping describe the selected one.
+    if pair_meta.get("healthy_chain"):
+        healthy_pdb_text = filter_pdb_chain(healthy_pdb_text, pair_meta["healthy_chain"])
+    if pair_meta.get("mutant_chain"):
+        mutant_pdb_text = filter_pdb_chain(mutant_pdb_text, pair_meta["mutant_chain"])
 
     if len(seeds) < 3:
         raise ValueError("Matched comparison requires at least 3 independent seeds.")
@@ -615,7 +771,62 @@ def run_matched_docking_comparison(
         raise
 
     # 9. Consensus cluster selection, multi-seed support and binding-mode gate
-    binding_mode_details: dict = {}
+    #
+    # The largest cluster is not necessarily the cognate site: a surface or
+    # crystal-contact pocket can be reproduced by more seeds than the ATP site.
+    # When a chemically identical WT co-crystal ligand is available, use the
+    # cluster containing its redocking top-1 pose as the healthy consensus.
+    reference_guided_cluster = None
+    reference_guidance_meta: dict = {}
+    if wt_reference_ligand_meta and wt_reference_ligand_meta.get("ref_ligand_pdb_text"):
+        ref_smiles = wt_reference_ligand_meta.get("ref_smiles")
+        if not ref_smiles:
+            comp_id = wt_reference_ligand_meta.get("resname", "")
+            ref_smiles = fetch_chem_comp_smiles(comp_id) if comp_id else None
+        if ref_smiles:
+            try:
+                id_passed, id_reason, _ = verify_reference_ligand_identity(
+                    ref_smiles, ligand_smiles
+                )
+                if id_passed:
+                    pre_validation = validate_redocking_top_n(
+                        wt_reference_ligand_meta["ref_ligand_pdb_text"],
+                        h_poses,
+                        h_clusters,
+                        top_n=10,
+                        rmsd_cutoff=2.0,
+                        min_seed_support=2,
+                    )
+                    top1 = pre_validation.get("top1") or {}
+                    candidate = next(
+                        (
+                            cluster
+                            for cluster in h_clusters
+                            if cluster.cluster_id == top1.get("cluster_id")
+                        ),
+                        None,
+                    )
+                    dominant = _select_consensus_cluster(h_clusters)
+                    if candidate is not None and candidate.seed_count >= 2:
+                        reference_guided_cluster = candidate
+                        reference_guidance_meta = {
+                            "applied": True,
+                            "top1_rmsd_angstrom": top1.get("rmsd_angstrom"),
+                            "top1_seed": top1.get("seed"),
+                            "top1_rank": top1.get("rank"),
+                            "top1_cluster_id": candidate.cluster_id,
+                            "dominant_cluster_id": dominant.cluster_id,
+                            "top1_cluster_is_dominant": candidate.cluster_id == dominant.cluster_id,
+                        }
+                else:
+                    reference_guidance_meta = {
+                        "applied": False,
+                        "reason": id_reason,
+                    }
+            except Exception as exc:  # noqa: BLE001 - guidance is optional
+                reference_guidance_meta = {"applied": False, "reason": str(exc)}
+
+    binding_mode_details: dict = {"reference_guidance": reference_guidance_meta}
     try:
         h_top_cluster, m_top_cluster, delta_score, reprod_warnings = verify_comparison_clusters(
             h_clusters,
@@ -625,10 +836,27 @@ def run_matched_docking_comparison(
             healthy_pocket_residues=healthy_pocket_residues,
             mutant_pocket_residues=mutant_pocket_residues,
             details=binding_mode_details,
+            residue_mapping=(pair_validation_meta or {}).get("mapping"),
+            healthy_cluster=reference_guided_cluster,
+            strict_binding_mode=False,
         )
     except ValueError as val_err:
         _finalize_both_failed(str(val_err), h_meta=h_meta, m_meta=m_meta, h_cl=h_clusters, m_cl=m_clusters)
         raise
+
+    binding_mode_details["reference_guidance"] = reference_guidance_meta
+
+    if (
+        reference_guidance_meta.get("applied")
+        and not reference_guidance_meta.get("top1_cluster_is_dominant")
+    ):
+        reprod_warnings.append(
+            "WT reference-guided cluster selection: the largest healthy cluster "
+            f"(#{reference_guidance_meta['dominant_cluster_id']}) was not the "
+            "crystallographic site; the cluster containing the WT redocking top-1 "
+            f"pose (#{reference_guidance_meta['top1_cluster_id']}) was used for the "
+            "matched comparison."
+        )
 
     # 10. Scientific validation status via optional WT reference redocking with strict chemical identity gate
     validation_status = "exploratory—no reference validation"
@@ -740,6 +968,12 @@ def run_matched_docking_comparison(
                 "reason": validation_reason,
             },
             "binding_mode_check": binding_mode_details,
+            "binding_mode": {
+                "status": binding_mode_details.get("binding_mode_status", "not_evaluated"),
+                "details": binding_mode_details,
+            },
+            "delta_score_kcal_mol": delta_score,
+            "delta_score": delta_score,
             "redocking_validation": redocking_meta,
             "reference_ligand_identity_gate": identity_gate_meta,
         },
@@ -769,6 +1003,12 @@ def run_matched_docking_comparison(
                 "reason": mutant_validation_reason,
             },
             "binding_mode_check": binding_mode_details,
+            "binding_mode": {
+                "status": binding_mode_details.get("binding_mode_status", "not_evaluated"),
+                "details": binding_mode_details,
+            },
+            "delta_score_kcal_mol": delta_score,
+            "delta_score": delta_score,
             "reference_ligand_identity_gate": identity_gate_meta,
         },
         warnings=reprod_warnings,
@@ -778,6 +1018,10 @@ def run_matched_docking_comparison(
     return {
         "comparison_label": COMPARISON_LABEL,
         "delta_score": delta_score,
+        "delta_score_uncertainty_kcal": (
+            _combined_score_uncertainty(h_poses, m_poses) if delta_score is not None else None
+        ),
+        "binding_mode_status": binding_mode_details.get("binding_mode_status", "not_evaluated"),
         "validation_status": validation_status,
         "validation_reason": validation_reason,
         "mutant_validation_status": mutant_validation_status,

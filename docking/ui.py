@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 import streamlit as st
 import pandas as pd
-import streamlit.components.v1 as components
 import py3Dmol
 
 from docking.models import GridBox
@@ -27,7 +26,12 @@ from docking.binding_site import (
     extract_reference_ligand,
 )
 from docking.engine import run_vina_multi_seeds, get_vina_version
-from docking.validation import calculate_mapped_redocking_rmsd, cluster_poses_across_seeds, validate_redocking_top_n
+from docking.validation import (
+    calculate_mapped_redocking_rmsd,
+    cluster_poses_across_seeds,
+    derive_single_docking_status,
+    validate_redocking_top_n,
+)
 from docking.rcsb import fetch_deposited_pdb_text, fetch_biological_assembly_text, fetch_entry_quality
 from docking.comparison import (
     run_matched_docking_comparison,
@@ -56,6 +60,11 @@ from docking.pubchem import fetch_drug_from_pubchem
 import plotly.graph_objects as go
 import numpy as np
 
+# Protocol-specific heuristic bands for the multi-drug panel ΔScore labels.
+# These are not binding-affinity thresholds and carry no clinical meaning.
+SCORE_DIFF_NEUTRAL_BAND_KCAL = 0.6
+SCORE_DIFF_MODERATE_BAND_KCAL = 1.5
+
 def _get_pubchem_cid(smiles: str, state_key: str):
     """Return a PubChem CID only when it belongs to the current SMILES string."""
     info = st.session_state.get(state_key)
@@ -79,7 +88,7 @@ def extract_chains_from_pdb(pdb_text: str) -> list[str]:
 def render_docked_complex_3d(receptor_pdb_path: Path, pose_pdbqt_block: str, ref_ligand_pdb_text: str = "",
                               show_surface: bool = False, surface_opacity: float = 0.3, surface_type: str = "MS",
                               pocket_residues: list = None, hbonds: list = None,
-                              show_ligand: bool = True, ligand_style: str = "أعواد (Sticks)",
+                              show_ligand: bool = True, ligand_style: str = "Sticks",
                               grid_box: GridBox = None, show_grid_box: bool = False) -> str:
     view = py3Dmol.view(width="100%", height=480)
     if receptor_pdb_path.exists():
@@ -90,14 +99,14 @@ def render_docked_complex_3d(receptor_pdb_path: Path, pose_pdbqt_block: str, ref
             surf_kind = py3Dmol.MS if surface_type == "MS" else (py3Dmol.VDW if surface_type == "VDW" else py3Dmol.SAS)
             view.addSurface(surf_kind, {"opacity": surface_opacity, "color": "#ECEFF1"}, {"model": 0})
         
-        # تمييز أحماض جيب الارتباط بالأعواد (Sticks)
+        # Highlight binding-pocket residues as sticks
         if pocket_residues:
             for r in pocket_residues:
                 r_clean = str(r).strip()
                 if r_clean:
                     view.addStyle({"model": 0, "resi": r_clean}, {"stick": {"colorscheme": "orangeCarbon", "radius": 0.25}})
 
-        # تمييز الأحماض المشاركة في الروابط الهيدروجينية
+        # Highlight residues participating in polar contacts
         if hbonds:
             for hb in hbonds:
                 r_num = str(hb.get("res_num", "")).strip()
@@ -109,9 +118,9 @@ def render_docked_complex_3d(receptor_pdb_path: Path, pose_pdbqt_block: str, ref
         view.setStyle({"model": 1}, {"stick": {"colorscheme": "grayCarbon", "radius": 0.25}})
     if pose_pdbqt_block and show_ligand:
         view.addModel(pose_pdbqt_block, "pdb")
-        if "كرات" in ligand_style and "أعواد" not in ligand_style:
+        if "Spheres" in ligand_style and "Stick" not in ligand_style:
             l_style = {"sphere": {"colorscheme": "greenCarbon", "radius": 0.8}}
-        elif "أعواد وكرات" in ligand_style or "Ball" in ligand_style:
+        elif "Ball" in ligand_style:
             l_style = {"stick": {"colorscheme": "greenCarbon", "radius": 0.35}, "sphere": {"colorscheme": "greenCarbon", "radius": 0.5}}
         else:
             l_style = {"stick": {"colorscheme": "greenCarbon", "radius": 0.35}}
@@ -120,7 +129,7 @@ def render_docked_complex_3d(receptor_pdb_path: Path, pose_pdbqt_block: str, ref
     else:
         view.zoomTo()
 
-    # 📦 إظهار صندوق حيز الارتباط ثلاثي الأبعاد بصورة مضلعة واضحة الحواف (Polygonal Wireframe Grid Box)
+    # Render 3D polygonal wireframe search grid box
     if grid_box and show_grid_box:
         try:
             cx = float(grid_box.center_x)
@@ -130,7 +139,7 @@ def render_docked_complex_3d(receptor_pdb_path: Path, pose_pdbqt_block: str, ref
             hy = float(grid_box.size_y)
             dz = float(grid_box.size_z)
 
-            # 1. أوجه شفافة خفيفة لتجسيم عمق الصندوق دون حجب الجيب
+            # 1. Translucent faces to visualize box depth without obscuring the pocket
             view.addBox({
                 "center": {"x": cx, "y": cy, "z": cz},
                 "dimensions": {"w": wx, "h": hy, "d": dz},
@@ -138,7 +147,7 @@ def render_docked_complex_3d(receptor_pdb_path: Path, pose_pdbqt_block: str, ref
                 "opacity": 0.12
             })
 
-            # 2. شبكة مضلعة ثلاثية الأبعاد (Wireframe Cage)
+            # 2. 3D wireframe cage
             view.addBox({
                 "center": {"x": cx, "y": cy, "z": cz},
                 "dimensions": {"w": wx, "h": hy, "d": dz},
@@ -147,7 +156,7 @@ def render_docked_complex_3d(receptor_pdb_path: Path, pose_pdbqt_block: str, ref
                 "opacity": 0.85
             })
 
-            # 3. إبراز حواف المكعب الـ 12 المضلعة (12 Boundary Edges)
+            # 3. Highlight the 12 boundary edges of the box
             x0, x1 = cx - wx / 2.0, cx + wx / 2.0
             y0, y1 = cy - hy / 2.0, cy + hy / 2.0
             z0, z1 = cz - dz / 2.0, cz + dz / 2.0
@@ -163,9 +172,9 @@ def render_docked_complex_3d(receptor_pdb_path: Path, pose_pdbqt_block: str, ref
                 {"x": x0, "y": y1, "z": z1},  # 7
             ]
             edges = [
-                (0, 1), (1, 2), (2, 3), (3, 0),  # القاعدة السفلية
-                (4, 5), (5, 6), (6, 7), (7, 4),  # القاعدة العلوية
-                (0, 4), (1, 5), (2, 6), (3, 7),  # الأضلاع الجانبية
+                (0, 1), (1, 2), (2, 3), (3, 0),  # Bottom face
+                (4, 5), (5, 6), (6, 7), (7, 4),  # Top face
+                (0, 4), (1, 5), (2, 6), (3, 7),  # Vertical edges
             ]
             for start_idx, end_idx in edges:
                 view.addLine({
@@ -200,12 +209,17 @@ def sync_target_binding_site_state(current_target_identity: str, session_state_d
 
 def find_recovery_pose_index(poses: list, validation_details: dict | None) -> int:
     """
-    Finds the index of the validated recovery pose from validation details.
-    Matches both seed and rank. Returns 0 if missing, not found, or invalid.
+    Finds the index of the pose that actually satisfied the validation gate.
+
+    Full protocol validation points at the top-1 pose; Top-N recovery points at
+    the best recovered pose.  Matching is by seed and rank.
     """
     if not poses or not validation_details:
         return 0
-    recovered = validation_details.get("recovery", {})
+    if validation_details.get("protocol_validated"):
+        recovered = validation_details.get("top1", {})
+    else:
+        recovered = validation_details.get("recovery", {})
     recovered_seed = recovered.get("seed")
     recovered_rank = recovered.get("rank")
     if recovered_seed is None or recovered_rank is None:
@@ -236,17 +250,18 @@ def render_docking_tab():
             f"{reason} Saved run folders remain available as separate provenance records."
         )
 
-    st.header("🔬 محاكاة الارتباط الجزيئي (Docking)")
+    st.header("🔬 Molecular Docking Simulation — Vina (AutoDock Vina Molecular Docking Engine)")
     vina_ver = get_vina_version()
-    st.caption(f"⚙️ المحرك: {vina_ver} | إعدادات الجزيئات: RDKit & OpenBabel")
+    st.caption(f"⚙️ Engine: {vina_ver} | Ligand Preparation: RDKit & OpenBabel")
     st.caption(
-        "⚠️ درجة Vina دالة تجريبية تعتمد جزئياً على حجم الجزيء (MW bias)، ولا تُقارن مباشرة "
-        "بين مركبات بأحجام مختلفة أو مع طاقة ارتباط حرة مقاسة."
+        "⚠️ Vina (AutoDock Vina Molecular Docking Engine) score is an empirical scoring function "
+        "partially dependent on MW (Molecular Weight) bias; do not compare directly across molecules of different sizes "
+        "or equate to experimentally measured binding free energy."
     )
 
     vina_exec = get_vina_path()
     if not vina_exec.exists():
-        st.error(f"❌ لم يتم العثور على ملف المحرك Vina في المسار: {vina_exec}")
+        st.error(f"❌ Vina (AutoDock Vina Molecular Docking Engine) executable not found at: {vina_exec}")
         return
 
     try:
@@ -262,25 +277,31 @@ def render_docking_tab():
         tb_col1, tb_col2 = st.columns(2)
         with tb_col1:
             workflow_mode = st.radio(
-                "🎯 نوع التحليل المطلوب:",
+                "🎯 Analysis Workflow:",
                 ["single_docking", "matched_healthy_vs_mutant"],
-                format_func=lambda m: "إرساء فردي (Single Docking)" if m == "single_docking" else "مقارنة السليم والمصاب (Matched Comparison)",
+                format_func=lambda m: "Single-Target Docking" if m == "single_docking" else "Matched WT (Wild-Type Reference) vs. MT (Mutant Variant) Comparison",
                 horizontal=True,
                 key="docking_workflow_mode"
             )
         with tb_col2:
             ui_mode = st.radio(
-                "⚡ نمط الواجهة والتجربة:",
-                ["⚡ النمط الاستكشافي السريع (Quick Exploratory Mode)", "🔬 النمط البحثي المتقدم (Advanced Research Mode)"],
+                "⚡ Interface Mode:",
+                ["⚡ Quick Exploratory Mode", "🔬 Advanced Research Mode"],
                 horizontal=True,
                 key="docking_interface_mode"
             )
-            is_advanced_mode = "المتقدم" in ui_mode
+            is_advanced_mode = "Advanced" in ui_mode
 
         if is_advanced_mode:
-            st.info("🔬 **النمط البحثي المتقدم مفعّل:** يتيح لك التحكم الكامل في معاملات محرك AutoDock Vina (دقة البحث، البذور، عدد الوضعيات، ونطاق الطاقة) مع استعراض تحليلي إحصائي موسّع للعناقيد والتحقق من الوضعيات.")
+            st.info(
+                "🔬 **Advanced Research Mode Active:** Full control over Vina (AutoDock Vina Molecular Docking Engine) parameters "
+                "(exhaustiveness, random seeds, pose count, and energy range) with expanded statistical cluster analysis and pose validation."
+            )
         else:
-            st.info("⚡ **النمط الاستكشافي السريع مفعّل (Quick Exploratory Mode):** عرض مبسط وغير سريري (non-clinical) لنفس بروتوكول الإرساء بإعدادات قياسية (دقة = 8، 3 بذور مستقلة).")
+            st.info(
+                "⚡ **Quick Exploratory Mode Active:** Streamlined, non-clinical view of the same docking protocol "
+                "using standard settings (exhaustiveness = 8, 3 independent seeds)."
+            )
 
     if workflow_mode == "single_docking":
         _render_single_docking_ui(vina_ver, is_advanced_mode=is_advanced_mode)
@@ -294,14 +315,14 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
     col_t1, col_t2 = st.columns(2)
     with col_t1:
         with st.container(border=True):
-            st.markdown("#### 🏛️ 1️⃣ اختيار البروتين وجيب الارتباط")
+            st.markdown("#### 🏛️ 1️⃣ Receptor Protein & Binding Site Selection")
             target_mode = st.radio(
-                "مصدر البروتين:",
+                "Protein Source:",
                 ["custom_pdb", "upload_pdb", "from_tab1"],
                 format_func=lambda m: {
-                    "custom_pdb": "رمز PDB",
-                    "upload_pdb": "رفع ملف PDB",
-                    "from_tab1": "من التحليل الهيكلي"
+                    "custom_pdb": "PDB (Protein Data Bank) ID",
+                    "upload_pdb": "Upload PDB (Protein Data Bank) File",
+                    "from_tab1": "From Structural Analysis (Tab 1)"
                 }[m],
                 horizontal=True,
                 key="dock_target_source_mode"
@@ -314,34 +335,34 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
 
             if target_mode == "custom_pdb":
                 custom_target_id = st.text_input(
-                    "كود PDB:",
+                    "PDB (Protein Data Bank) Code:",
                     value=st.session_state.get("dock_custom_pdb_val", ""),
-                    placeholder="مثال: 1M17",
+                    placeholder="e.g., 1M17",
                     key="dock_custom_pdb_input"
                 ).strip().upper()
                 st.session_state["dock_custom_pdb_val"] = custom_target_id
                 selected_target_label = custom_target_id if custom_target_id else "CUSTOM"
                 target_key = "custom_pdb"
             elif target_mode == "upload_pdb":
-                uploaded_pdb_file = st.file_uploader("ملف PDB:", type=["pdb"], key="dock_upload_pdb")
-                custom_target_id = st.text_input("اسم البروتين:", value="CUSTOM_RECEPTOR", key="dock_upload_name").strip()
+                uploaded_pdb_file = st.file_uploader("PDB (Protein Data Bank) File:", type=["pdb"], key="dock_upload_pdb")
+                custom_target_id = st.text_input("Protein Name:", value="CUSTOM_RECEPTOR", key="dock_upload_name").strip()
                 selected_target_label = custom_target_id
                 target_key = "upload_pdb"
             elif target_mode == "from_tab1":
                 target_options = []
                 if st.session_state.get("h_id"):
-                    target_options.append(("السليم: " + st.session_state["h_id"], "h"))
+                    target_options.append(("WT (Wild-Type Reference): " + st.session_state["h_id"], "h"))
                 if st.session_state.get("m_id"):
-                    target_options.append(("المصاب: " + st.session_state["m_id"], "m"))
+                    target_options.append(("MT (Mutant Variant): " + st.session_state["m_id"], "m"))
                 if target_options:
                     selected_target_label, target_key = st.selectbox(
-                        "اختر البروتين:",
+                        "Select Protein:",
                         target_options,
                         format_func=lambda x: x[0],
                         key="dock_tab1_target_select"
                     )
                 else:
-                    st.info("لم يتم تحميل بروتينات في التبويب الأول بعد.")
+                    st.info("No proteins have been loaded in Tab 1 yet.")
                     target_key = "none"
                     selected_target_label = "NONE"
 
@@ -364,27 +385,28 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
             previous_target_identity = st.session_state.get("dock_previous_target_identity")
             was_reset = sync_target_binding_site_state(current_target_identity, st.session_state)
             if was_reset and previous_target_identity is not None:
-                st.info("تمت إعادة ضبط إعدادات جيب الارتباط لتغيير البروتين الهدف.")
+                st.info("Binding-site settings were reset because the target protein changed.")
 
             st.markdown("---")
             site_mode = st.radio(
-                "تحديد جيب الارتباط:",
+                "Binding-Site Definition:",
                 ["co_crystal_ligand", "residue_defined", "blind_docking"],
                 format_func=lambda m: (
-                    "ربيطة مرجعية (Ligand)" if m == "co_crystal_ligand"
-                    else ("أحماض أمينية (Residues)" if m == "residue_defined"
-                    else "🌐 إرساء لكامل البروتين (Whole Protein)")
+                    "Co-Crystal Reference Ligand" if m == "co_crystal_ligand"
+                    else ("Pocket Residues" if m == "residue_defined"
+                    else "🌐 Whole-Protein Blind Docking")
                 ),
                 horizontal=True,
                 key="dock_site_mode_radio"
             )
             keep_crystal_waters = st.checkbox(
-                "الاحتفاظ بمياه البلورة (Keep crystal waters)",
+                "Keep crystal waters",
                 value=False,
                 key="dock_keep_waters",
                 help=(
-                    "بعض الجيوب تعتمد على ماء جسري. عند التفعيل تُبقى waters في PDBQT المستقبل، "
-                    "ويجب أن يُسجَّل ذلك في الـ manifest ويُطبَّق على الذراعين معاً في المقارنة."
+                    "Some binding pockets rely on bridging water molecules. When enabled, crystal waters are retained "
+                    "in the receptor PDBQT (Protein Data Bank, Partial Charge [Q], & Atom Type [T] Format), "
+                    "must be recorded in the run manifest, and must be applied identically to both arms in matched comparisons."
                 ),
             )
 
@@ -400,50 +422,50 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                 with col_rf1:
                     default_ref_lig = st.session_state.get("dock_ref_lig_input", "") or ("AQ4" if is_1m17 else st.session_state.get("dock_ref_lig_val", ""))
                     ref_ligand_code = st.text_input(
-                        "كود الربيطة (Ligand):",
+                        "Reference Ligand Code:",
                         value=default_ref_lig,
-                        placeholder="مثال: AQ4",
+                        placeholder="e.g., AQ4",
                         key="dock_ref_lig_input"
                     ).strip().upper()
                     if not is_1m17:
                         st.session_state["dock_ref_lig_val"] = ref_ligand_code
                 with col_rf2:
                     ref_lig_chain = st.text_input(
-                        "سلسلة الربيطة (Chain):",
+                        "Ligand Chain:",
                         value=st.session_state.get("dock_ref_lig_chain", ""),
-                        placeholder="مثال: A (اختياري)",
+                        placeholder="e.g., A (optional)",
                         key="dock_ref_lig_chain"
                     ).strip()
                 with col_rf3:
                     ref_lig_resseq = st.text_input(
-                        "رقم بقية الربيطة (Residue #):",
+                        "Ligand Residue #:",
                         value=st.session_state.get("dock_ref_lig_resseq", ""),
-                        placeholder="مثال: 1001 (اختياري)",
+                        placeholder="e.g., 1001 (optional)",
                         key="dock_ref_lig_resseq"
                     ).strip()
             elif site_mode == "residue_defined":
                 default_pocket_res = st.session_state.get("dock_pocket_res_input", "") or ("A:790, A:858" if is_1m17 else st.session_state.get("dock_pocket_res_val", ""))
                 pocket_residues_input = st.text_input(
-                    "أرقام الأحماض الأمينية:",
+                    "Pocket Residue Numbers (CHAIN:RESIDUE):",
                     value=default_pocket_res,
-                    placeholder="مثال: A:790, A:858",
+                    placeholder="e.g., A:790, A:858",
                     key="dock_pocket_res_input"
                 )
                 if not is_1m17:
                     st.session_state["dock_pocket_res_val"] = pocket_residues_input
             else:
                 st.info(
-                    "🌐 **الإرساء لكامل البروتين (Whole Protein):** يتم إنشاء صندوق بحث ثلاثي الأبعاد يحيط بكامل الهيكل الفراغي للبروتين تلقائياً. "
-                    "يُنصح برفع دقة البحث (Exhaustiveness) إلى 16 أو أعلى لضمان فحص شامل لكافة التجاويف السطحية."
+                    "🌐 **Whole-Protein Blind Docking:** A 3D search box enclosing the entire protein structure is generated automatically. "
+                    "Raising search exhaustiveness to 16 or higher is recommended for thorough sampling across all surface cavities."
                 )
                 st.warning(
-                    "⚠️ **الإرساء الأعمى منخفض الثقة:** النتائج استكشافية ولا تُعد بديلاً عن جيب ارتباط "
-                    "مُتحقق (co-crystal ligand أو بقايا محددة). قد تكون أفضل وضعية في تجويف سطحي غير وظيفي."
+                    "⚠️ **Low-Confidence Blind Docking:** Results are exploratory and do not substitute for a validated binding site "
+                    "(co-crystal ligand or defined pocket residues). The top-scoring pose may occupy a non-functional surface cavity."
                 )
                 blind_chain_id = st.text_input(
-                    "سلسلة محددة (Chain ID - اختياري، اتركه فارغاً لكامل الجزيء):",
+                    "Specific Chain ID (optional; leave blank for whole molecule):",
                     value=st.session_state.get("dock_blind_chain_id", ""),
-                    placeholder="مثال: A (اختياري)",
+                    placeholder="e.g., A (optional)",
                     key="dock_blind_chain_id"
                 ).strip().upper()
 
@@ -456,26 +478,26 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
             }
             if "dock_pocket_padding" not in st.session_state:
                 padding_kwargs["value"] = 8.0
-            slider_label = "توسيع الصندوق (Å Padding):" if site_mode == "blind_docking" else "توسيع الجيب (Å Padding):"
+            slider_label = "Box Padding — Å (Angstroms):" if site_mode == "blind_docking" else "Pocket Padding — Å (Angstroms):"
             pocket_padding = st.slider(slider_label, **padding_kwargs)
 
     with col_t2:
         with st.container(border=True):
-            st.markdown("#### 💊 2️⃣ مواصفات الدواء ومعاملات المحاكاة")
-            # 🔍 البحث المباشر في PubChem بالاسم العلمي أو التجاري
+            st.markdown("#### 💊 2️⃣ Ligand Properties & Simulation Parameters")
+            # Direct live/offline PubChem lookup by generic or trade name
             col_pc1, col_pc2 = st.columns([2.2, 1.0])
             with col_pc1:
                 pubchem_query = st.text_input(
-                    "🔍 البحث عن دواء في PubChem:",
-                    placeholder="مثال: Gefitinib, Aspirin, Imatinib",
+                    "🔍 Search Drug in PubChem:",
+                    placeholder="e.g., Gefitinib, Aspirin, Imatinib",
                     key="dock_pubchem_search_input"
                 )
             with col_pc2:
                 st.write("")
                 st.write("")
-                if st.button("🌐 جلب الدواء", key="btn_pubchem_fetch", use_container_width=True):
+                if st.button("🌐 Fetch Drug", key="btn_pubchem_fetch", use_container_width=True):
                     if pubchem_query.strip():
-                        with st.spinner(f"جارٍ البحث عن '{pubchem_query}' في PubChem..."):
+                        with st.spinner(f"Searching PubChem for '{pubchem_query}'..."):
                             pc_res = fetch_drug_from_pubchem(pubchem_query)
                             if pc_res.get("success"):
                                 st.session_state["dock_lig_name_val"] = pc_res["title"]
@@ -487,22 +509,22 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                                     "smiles": pc_res.get("smiles", ""),
                                 }
                                 st.success(
-                                    f"✅ تم جلب {pc_res['title']} من {pc_res.get('source')} "
-                                    f"(PubChem CID: {pc_res.get('cid')})!"
+                                    f"✅ Fetched {pc_res['title']} from {pc_res.get('source')} "
+                                    f"(PubChem CID [Compound Identifier]: {pc_res.get('cid')})!"
                                 )
                                 st.rerun()
                             else:
-                                st.error(pc_res.get("error", "فشل البحث في PubChem."))
+                                st.error(pc_res.get("error", "PubChem lookup failed."))
                     else:
-                        st.warning("يرجى إدخال اسم الدواء أولاً.")
+                        st.warning("Please enter a drug name first.")
 
             col_dn1, col_dn2 = st.columns([1, 1.6])
             with col_dn1:
                 default_lig_name = "Erlotinib" if is_1m17 else st.session_state.get("dock_lig_name_val", "")
                 ligand_name = st.text_input(
-                    "اسم الدواء:",
+                    "Drug Name:",
                     value=default_lig_name,
-                    placeholder="مثال: Erlotinib",
+                    placeholder="e.g., Erlotinib",
                     key="dock_lig_name_input"
                 )
                 if not is_1m17 and ligand_name:
@@ -515,85 +537,85 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                     else st.session_state.get("dock_lig_smiles_val", "")
                 )
                 ligand_smiles = st.text_input(
-                    "صيغة SMILES:",
+                    "SMILES (Simplified Molecular-Input Line-Entry System):",
                     value=default_smiles,
-                    placeholder="أدخل صيغة SMILES الكيميائية للدواء",
+                    placeholder="Enter the chemical SMILES string for the drug",
                     key="dock_lig_smiles_input"
                 )
                 if not is_1m17 and ligand_smiles:
                     st.session_state["dock_lig_smiles_val"] = ligand_smiles
 
-            # 🧪 المعاينة الكيميائية ثنائية الأبعاد والخصائص الصيدلانية
+            # 2D chemical depiction and pharmacological properties
             if ligand_smiles.strip():
-                tab_struct, tab_lip = st.tabs(["🧪 التركيب الكيميائي 2D", "📊 معايير ليبينسكي (ADME)"])
+                tab_struct, tab_lip = st.tabs(["🧪 2D Chemical Structure", "📊 Lipinski Rules — ADME (Absorption, Distribution, Metabolism, and Excretion)"])
                 with tab_struct:
                     svg_2d = generate_2d_depiction_svg(ligand_smiles, width=320, height=160)
                     if svg_2d:
                         try:
-                            st.image(svg_2d, caption="التركيب الكيميائي ثنائي الأبعاد (2D Depiction)", use_container_width=True)
+                            st.image(svg_2d, caption="2D (Two-Dimensional) Chemical Structure Depiction", use_container_width=True)
                         except Exception:
-                            st.caption("تعذر عرض المخطط ثنائي الأبعاد.")
+                            st.caption("Could not display 2D chemical depiction.")
                     else:
-                        st.caption("تعذر رسم الصيغة الكيميائية ثنائية الأبعاد.")
+                        st.caption("Could not render 2D chemical structure.")
 
                 with tab_lip:
                     d_props = calculate_drug_properties(ligand_smiles)
                     if d_props and "error" not in d_props:
                         dp1, dp2, dp3 = st.columns(3)
-                        dp1.metric("الوزن الجزيئي", f"{d_props['molecular_weight']} Da")
-                        dp2.metric("LogP", f"{d_props['logp']}")
-                        dp3.metric("TPSA", f"{d_props['tpsa']} Å²")
+                        dp1.metric("MW (Molecular Weight)", f"{d_props['molecular_weight']} Da (Daltons / atomic mass units)")
+                        dp2.metric("logP (Octanol–Water Partition Coefficient)", f"{d_props['logp']}")
+                        dp3.metric("TPSA (Topological Polar Surface Area)", f"{d_props['tpsa']} Å² (square Angstroms)")
                         dp4, dp5, dp6 = st.columns(3)
-                        dp4.metric("مانح H-Bond", d_props['hbd'])
-                        dp5.metric("مستقبل H-Bond", d_props['hba'])
-                        dp6.metric("الروابط الدوارة", d_props['rotatable_bonds'])
+                        dp4.metric("HBD (Hydrogen-Bond Donors)", d_props['hbd'])
+                        dp5.metric("HBA (Hydrogen-Bond Acceptors)", d_props['hba'])
+                        dp6.metric("Rotatable Bonds", d_props['rotatable_bonds'])
                         if d_props['lipinski_pass']:
-                            st.caption("✅ الجزيء يتوافق تماماً مع معايير ليبينسكي للدواء الفموي (Drug-like).")
+                            st.caption("✅ Compound complies with Lipinski's Rule of Five for oral drug-likeness.")
                         else:
                             st.caption(f"⚠️ {d_props['drug_likeness']}")
                         if d_props.get("pains_alert"):
                             st.warning(
-                                "⚠️ تنبيه PAINS: هذا النمط الكيميائي قد يسبب تداخلاً في الفحوص "
-                                f"({d_props.get('pains_name', 'PAINS')}). راجع المرشح تجريبياً."
+                                "⚠️ PAINS (Pan-Assay Interference Compounds) Alert: This chemotype may cause assay interference "
+                                f"({d_props.get('pains_name', 'PAINS')}). Verify experimentally."
                             )
                         if d_props.get("aggregation_risk"):
-                            st.warning(f"⚠️ خطر تجمّع heuristic: {d_props.get('aggregation_note', '')}")
+                            st.warning(f"⚠️ Heuristic Aggregation Risk: {d_props.get('aggregation_note', '')}")
 
             st.markdown("---")
-            # دقة البحث والبذور
+            # Search exhaustiveness and random seeds
             if is_advanced_mode:
-                st.markdown("##### ⚙️ إعدادات محرك Vina المتقدمة:")
+                st.markdown("##### ⚙️ Advanced Vina (AutoDock Vina Molecular Docking Engine) Settings:")
                 col_cfg1, col_cfg2 = st.columns(2)
                 with col_cfg1:
                     exhaustiveness = st.select_slider(
-                        "دقة البحث (Exhaustiveness):",
+                        "Search Exhaustiveness:",
                         options=[4, 8, 16, 32, 64],
                         value=8,
-                        help="كلما زادت القيمة زادت دقة استكشاف الجيب والارتباط على حساب وقت المعالجة.",
+                        help="Higher values increase binding-pocket sampling thoroughness at the cost of runtime.",
                         key="dock_single_exh"
                     )
                     num_modes = st.slider(
-                        "أقصى عدد للوضعيات (num_modes):",
+                        "Max Output Modes (num_modes):",
                         min_value=1,
                         max_value=20,
                         value=9,
-                        help="عدد أوضاع الارتباط الناتجة لكل بذرة.",
+                        help="Maximum number of binding poses generated per seed.",
                         key="dock_single_num_modes"
                     )
                 with col_cfg2:
                     seed_choice = st.selectbox(
-                        "استراتيجية البذور (Seeds):",
+                        "Seed Strategy:",
                         ["three_seeds", "single_seed"],
-                        format_func=lambda x: "3 بذور [42, 101, 2024] (تحقق إحصائي)" if x == "three_seeds" else "بذرة واحدة [42] (اختبار سريع)",
+                        format_func=lambda x: "3 Seeds [42, 101, 2024] (Statistical Reproducibility)" if x == "three_seeds" else "Single Seed [42] (Quick Test)",
                         key="dock_single_seeds"
                     )
                     energy_range = st.slider(
-                        "نطاق طاقة الوضعيات (Energy Range kcal/mol):",
+                        "Pose Energy Range — kcal/mol (kilocalories per mole):",
                         min_value=1.0,
                         max_value=5.0,
                         value=3.0,
                         step=0.5,
-                        help="الحد الأقصى لفارق الطاقة عن الوضعية الأفضل لاعتماد الوضعية.",
+                        help="Maximum energy difference above the best pose to retain a binding mode.",
                         key="dock_single_energy_range"
                     )
             else:
@@ -601,7 +623,7 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                 seed_choice = "three_seeds"
                 num_modes = 9
                 energy_range = 3.0
-                st.caption("⚡ **إعدادات سريعة قياسية:** دقة البحث = 8 | 3 بذور عشوائية مستقلة [42, 101, 2024] لضمان التكرارية | 9 وضعيات.")
+                st.caption("⚡ **Standard Quick Settings:** Exhaustiveness = 8 | 3 independent random seeds [42, 101, 2024] for reproducibility | 9 modes.")
 
     single_fp_payload = {
         "workflow": "single_docking",
@@ -627,16 +649,16 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
         st.session_state.pop("current_docking_result", None)
     st.session_state["dock_single_input_fingerprint"] = current_single_fp
 
-    if st.button("🚀 بدء الإرساء (Run Docking)", type="primary"):
+    if st.button("🚀 Run Docking", type="primary"):
         st.session_state.pop("current_docking_result", None)
         if site_mode == "co_crystal_ligand" and not ref_ligand_code:
-            st.error("يرجى إدخال كود الربيطة المرجعية لتحديد جيب الارتباط.")
+            st.error("Please enter a reference ligand code to define the binding site.")
             return
         if site_mode == "residue_defined" and not pocket_residues_input.strip():
-            st.error("يرجى إدخال أرقام الأحماض الأمينية لتحديد جيب الارتباط.")
+            st.error("Please enter binding-site residue numbers.")
             return
         if not ligand_smiles.strip():
-            st.error("يرجى إدخال صيغة SMILES للدواء.")
+            st.error("Please enter a SMILES (Simplified Molecular-Input Line-Entry System) string for the ligand.")
             return
 
         seeds_to_run = [42, 101, 2024] if seed_choice == "three_seeds" else [42]
@@ -658,10 +680,10 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                 source_url = "https://files.rcsb.org/download/1M17.pdb"
         elif target_key == "custom_pdb":
             if not custom_target_id:
-                st.error("يرجى إدخال رمز PDB صالح.")
+                st.error("Please enter a valid PDB (Protein Data Bank) code.")
                 return
             target_id = custom_target_id
-            with st.spinner(f"جارٍ جلب بنية البروتين {target_id} من RCSB PDB..."):
+            with st.spinner(f"Fetching protein structure {target_id} from RCSB PDB (Research Collaboratory for Structural Bioinformatics Protein Data Bank)..."):
                 assembly_text = fetch_biological_assembly_text(target_id, 1)
                 if assembly_text:
                     pdb_data = assembly_text
@@ -674,11 +696,11 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                     assembly_id = None
                     source_url = f"https://files.rcsb.org/download/{target_id}.pdb"
             if not pdb_data or len(pdb_data.strip()) == 0:
-                st.error(f"❌ تعذر جلب ملف PDB للرمز {target_id}. يرجى التحقق من صحة الرمز أو الاتصال بالإنترنت.")
+                st.error(f"❌ Could not fetch PDB (Protein Data Bank) entry {target_id}. Please check the code or your internet connection.")
                 return
         elif target_key == "upload_pdb":
             if not uploaded_pdb_file:
-                st.error("يرجى رفع ملف PDB من جهازك أولاً.")
+                st.error("Please upload a PDB (Protein Data Bank) file first.")
                 return
             target_id = custom_target_id if custom_target_id else "UPLOADED_PROTEIN"
             pdb_data = uploaded_pdb_file.getvalue().decode("utf-8", errors="ignore")
@@ -698,7 +720,7 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                 assembly_id = None
                 source_url = f"https://files.rcsb.org/download/{target_id}.pdb"
             else:
-                st.error("لم يتم العثور على إحداثيات للبروتين المختار.")
+                st.error("Coordinates for the selected protein were not found.")
                 return
 
         chains = extract_chains_from_pdb(pdb_data)
@@ -713,19 +735,19 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
         )
         if quality_meta:
             quality_bits = [
-                f"Resolution: {quality_meta.get('resolution_angstrom') or 'unknown'} Å",
+                f"Resolution: {quality_meta.get('resolution_angstrom') or 'unknown'} Å (Angstroms)",
                 f"R_free: {quality_meta.get('r_free') if quality_meta.get('r_free') is not None else 'unknown'}",
                 f"Method: {quality_meta.get('experimental_method') or 'unknown'}",
             ]
             if quality_meta.get("ligand_rscc") is not None:
                 quality_bits.append(
-                    f"Ref-ligand RSCC: {quality_meta['ligand_rscc']:.3f} "
+                    f"Ref-ligand RSCC (Real-Space Correlation Coefficient): {quality_meta['ligand_rscc']:.3f} "
                     f"({quality_meta.get('ligand_code', '')})"
                 )
             residue_rscc = quality_meta.get("residue_rscc_summary") or {}
             if residue_rscc.get("n_residues"):
                 quality_bits.append(
-                    f"Protein RSCC median: {residue_rscc['median_rscc']:.3f} "
+                    f"Protein RSCC (Real-Space Correlation Coefficient) median: {residue_rscc['median_rscc']:.3f} "
                     f"(<0.8: {residue_rscc['n_below_0_8']}/{residue_rscc['n_residues']})"
                 )
             st.caption(" | ".join(quality_bits))
@@ -734,20 +756,22 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                 and quality_meta["resolution_angstrom"] > 2.5
             ):
                 st.warning(
-                    "⚠️ دقة البنية منخفضة (> 2.5 Å)؛ قد تكون هندسة الجيب غير مؤكدة. "
-                    "هذا تحذير جودة بنية وليس رفضاً تلقائياً."
+                    "⚠️ Low structural resolution (> 2.5 Å [Angstroms]); binding-pocket geometry may be uncertain. "
+                    "This is a structure-quality advisory, not an automatic rejection."
                 )
             if quality_meta.get("r_free") is not None and quality_meta["r_free"] >= 0.25:
                 st.warning(
-                    "⚠️ R_free ≥ 0.25؛ راجع ملاءمة البنية قبل الاعتماد على الوضعيات."
+                    f"⚠️ R_free = {quality_meta['r_free']:.3f} (≥ 0.25); model quality is below the "
+                    "wiki benchmark guideline (R_free < 0.25). Binding-pocket geometry and ligand "
+                    "placement may be less reliable. This is an advisory, not an automatic rejection."
                 )
             if (
                 quality_meta.get("ligand_rscc") is not None
                 and quality_meta["ligand_rscc"] < 0.8
             ):
                 st.warning(
-                    "⚠️ RSCC للربيطة المرجعية < 0.8؛ كثافة الربيطة ضعيفة وقد تكون "
-                    "الوضعية البلورية غير مؤكدة."
+                    "⚠️ Reference-ligand RSCC (Real-Space Correlation Coefficient) < 0.8; electron density is weak "
+                    "and the crystal pose may be uncertain."
                 )
             if (
                 residue_rscc.get("median_rscc") is not None
@@ -757,12 +781,12 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                 )
             ):
                 st.warning(
-                    "⚠️ RSCC لبقايا البروتين منخفض (median < 0.8 أو >10% من البقايا < 0.8)؛ "
-                    "راجع جودة كثافة البنية قبل الاعتماد على الجيب."
+                    "⚠️ Protein-residue RSCC (Real-Space Correlation Coefficient) is low (median < 0.8 or >10% of residues < 0.8); "
+                    "review local density quality before relying on the pocket."
                 )
             low_residue_rscc = quality_meta.get("residue_rscc_low") or []
             if low_residue_rscc:
-                with st.expander("🔎 بقايا بروتين RSCC < 0.8"):
+                with st.expander("🔎 Protein Residues with RSCC (Real-Space Correlation Coefficient) < 0.8"):
                     st.dataframe(
                         low_residue_rscc,
                         use_container_width=True,
@@ -845,13 +869,29 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                 "warnings": [f"Binding site error: {e}"]
             }
             finalize_manifest(run_dir, manifest_fail)
-            st.error(f"Docking was not run: define a validated binding site. خطأ: {e}")
+            st.error(f"Docking was not run: define a validated binding site. Error: {e}")
             return
 
         grid_meta = {
             "center": [grid.center_x, grid.center_y, grid.center_z],
             "size": [grid.size_x, grid.size_y, grid.size_z]
         }
+
+        grid_box_warnings = []
+        oversized_axes = [
+            f"{axis} = {value:.1f} Å"
+            for axis, value in zip("xyz", (grid.size_x, grid.size_y, grid.size_z))
+            if value > 30.0
+        ]
+        if oversized_axes:
+            grid_warning = (
+                "⚠️ Search box exceeds the 30 Å guideline on "
+                + ", ".join(oversized_axes)
+                + ". Prefer the smallest box that contains the pocket; reduce padding or "
+                "increase exhaustiveness (see wiki/receptor-preparation.md)."
+            )
+            st.warning(grid_warning)
+            grid_box_warnings.append(grid_warning)
 
         # 3. Write initial manifest before running executables
         initial_data = {
@@ -868,7 +908,7 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
         write_initial_manifest(run_dir, initial_data)
 
         # 4. Receptor & Ligand Preparation
-        with st.spinner("جاري إعداد المستقبل والدواء وتشغيل محاكي الارتباط..."):
+        with st.spinner("Preparing receptor and ligand and running Vina (AutoDock Vina Molecular Docking Engine)..."):
             try:
                 clean_pdb, rec_pdbqt, prep_rep = prepare_receptor(
                     pdb_data,
@@ -897,7 +937,7 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                     results_meta={},
                     warnings=[f"Preparation failure: {e}"]
                 )
-                st.error(f"فشل إعداد المدخلات: {e}")
+                st.error(f"Input preparation failed: {e}")
                 return
 
             # 5. Execute Multi-Seed Vina runs
@@ -926,7 +966,7 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                     results_meta={},
                     warnings=[f"Engine failure: {e}"]
                 )
-                st.error(f"فشل تشغيل المحرك Vina: {e}")
+                st.error(f"Vina (AutoDock Vina Molecular Docking Engine) execution failed: {e}")
                 return
 
             # 6. Cluster poses across seeds
@@ -940,7 +980,7 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
 
             redocking_rmsd = None
             validation_status = "exploratory—no reference validation"
-            warnings = []
+            warnings = list(grid_box_warnings)
             validated_pose_info = {}
             mapping_details = {}
             validation_details = None
@@ -966,29 +1006,34 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                     redocking_rmsd = top1_info["rmsd_angstrom"]
                     mapping_details = top1_info["mapping_details"]
 
-                    validated_pose_info = {
-                        "seed": rec_info["seed"],
-                        "rank": rec_info["rank"],
-                        "cluster_id": rec_info["cluster_id"],
-                        "output_file": f"out_seed_{rec_info['seed']}.pdbqt",
-                        "score": rec_info["score"],
-                        "rmsd_angstrom": rec_info["rmsd_angstrom"],
-                        "cluster_seed_count": rec_info["cluster_seed_count"],
-                        "supporting_seeds": rec_info["supporting_seeds"]
-                    }
+                    validation_status, gate_warnings = derive_single_docking_status(
+                        validation_details,
+                        len(seeds_to_run),
+                        min_validation_seeds=MIN_VALIDATION_SEEDS,
+                        top_n=VALIDATION_TOP_N,
+                        rmsd_cutoff=RMSD_CUTOFF_ANGSTROM,
+                    )
+                    warnings.extend(gate_warnings)
 
-                    if len(seeds_to_run) < MIN_VALIDATION_SEEDS:
-                        validation_status = "exploratory—insufficient independent seeds"
-                    elif validation_details["recovery_rmsd_pass"] and validation_details["recovery_cluster_pass"]:
-                        validation_status = "validation passed (Top-10 recovery)"
-                        if not validation_details["top1_rmsd_pass"]:
-                            warnings.append("Crystal pose recovered reproducibly in Top-10, but Vina did not rank it first.")
-                    else:
-                        validation_status = "validation failed"
-                        if not validation_details["recovery_rmsd_pass"]:
-                            warnings.append(f"No pose within Top-{VALIDATION_TOP_N} achieved RMSD <= {RMSD_CUTOFF_ANGSTROM} Å (best recovery: {rec_info['rmsd_angstrom']} Å).")
-                        elif not validation_details["recovery_cluster_pass"]:
-                            warnings.append(f"Gate A Warning: Pose RMSD <= {RMSD_CUTOFF_ANGSTROM} Å, but cluster lacks support from at least {MIN_CLUSTER_SEED_SUPPORT} independent seeds.")
+                    chosen_info = None
+                    if validation_details.get("protocol_validated"):
+                        chosen_info = top1_info
+                    elif (
+                        validation_details.get("recovery_rmsd_pass")
+                        and validation_details.get("recovery_cluster_pass")
+                    ):
+                        chosen_info = rec_info
+                    if chosen_info is not None:
+                        validated_pose_info = {
+                            "seed": chosen_info["seed"],
+                            "rank": chosen_info["rank"],
+                            "cluster_id": chosen_info["cluster_id"],
+                            "output_file": f"out_seed_{chosen_info['seed']}.pdbqt",
+                            "score": chosen_info["score"],
+                            "rmsd_angstrom": chosen_info["rmsd_angstrom"],
+                            "cluster_seed_count": chosen_info["cluster_seed_count"],
+                            "supporting_seeds": chosen_info["supporting_seeds"]
+                        }
                 except Exception as ex:
                     validation_status = "validation unavailable"
                     warnings.append(f"Redocking calculation unavailable: {ex}")
@@ -1031,8 +1076,11 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                         "mapping_details": validation_details["recovery"]["mapping_details"]
                     },
                     "top1_rmsd_pass": validation_details["top1_rmsd_pass"],
+                    "top1_cluster_pass": validation_details["top1_cluster_pass"],
                     "recovery_rmsd_pass": validation_details["recovery_rmsd_pass"],
-                    "recovery_cluster_pass": validation_details["recovery_cluster_pass"]
+                    "recovery_cluster_pass": validation_details["recovery_cluster_pass"],
+                    "protocol_validated": validation_details["protocol_validated"],
+                    "validation_status": validation_status,
                 })
 
             results_meta = {
@@ -1086,18 +1134,18 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                 "run_dir": run_dir,
                 "input_fingerprint": current_single_fp
             }
-            st.success(f"✅ اكتمل الإرساء بنجاح! ({run_id})")
+            st.success(f"✅ Docking completed successfully! ({run_id})")
 
     # Display results
     res = st.session_state.get("current_docking_result")
     if res:
         st.markdown("---")
-        st.subheader(f"📊 نتائج الإرساء: {res['ligand_name']} ⚯ {res['target_id']}")
+        st.subheader(f"📊 Docking Results: {res['ligand_name']} ⚯ {res['target_id']}")
 
         val_stat = res["validation_status"]
         val_det = res.get("validation_details")
         best_score = lowest_vina_score(res.get("poses", []))
-        best_score_display = f"{best_score:.2f} kcal/mol" if best_score is not None else "—"
+        best_score_display = f"{best_score:.2f} kcal/mol (kilocalories per mole)" if best_score is not None else "—"
         total_poses_count = len(res.get("poses", []))
         clusters_count = len(res.get("clusters", []))
 
@@ -1105,31 +1153,31 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
         with st.container(border=True):
             kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
             if val_stat in {"validation passed", "protocol validated on WT reference"}:
-                gate_badge = "🟢 تم التحقق بنجاح"
+                gate_badge = "🟢 Validation Passed"
             elif val_stat == "validation passed (Top-10 recovery)":
-                gate_badge = "🟡 Top-10 recovery فقط (ليس top-1)"
+                gate_badge = "🟡 Top-10 Recovery Only (Not Top-1)"
             elif "failed" in val_stat:
-                gate_badge = "🔴 لم يجتز العتبة"
+                gate_badge = "🔴 Validation Failed"
             elif "insufficient" in val_stat:
-                gate_badge = "🟡 استكشافي (بذور غير كافية)"
+                gate_badge = "🟡 Exploratory (Insufficient Seeds)"
             else:
-                gate_badge = "⚪ غير متاح (دواء جديد)"
+                gate_badge = "⚪ Unavailable (No Reference Ligand)"
 
-            kpi_col1.metric("🎯 حالة التحقق (Gate A)", gate_badge)
-            kpi_col2.metric("Lowest Vina score (all poses)", best_score_display)
-            kpi_col3.metric("🔢 عدد الوضعيات المحسوبة", f"{total_poses_count} وضعية")
-            kpi_col4.metric("👥 مجموعات العناقيد", f"{clusters_count} عناقيد")
+            kpi_col1.metric("🎯 Validation Status (Gate A)", gate_badge)
+            kpi_col2.metric("Lowest Vina (AutoDock Vina Molecular Docking Engine) Score", best_score_display)
+            kpi_col3.metric("🔢 Calculated Poses", f"{total_poses_count} poses")
+            kpi_col4.metric("👥 Pose Clusters", f"{clusters_count} clusters")
 
         # Exploratory Summary for Quick Mode
         if not is_advanced_mode:
             with st.container(border=True):
-                st.markdown("#### Exploratory docking summary")
+                st.markdown("#### Exploratory Docking Summary")
                 if best_score is None:
                     st.markdown("- No docked pose is available.")
                 else:
                     st.markdown(
-                        f"- **Lowest Vina score among all calculated poses:** "
-                        f"`{best_score:.2f} kcal/mol`\n"
+                        f"- **Lowest Vina (AutoDock Vina Molecular Docking Engine) score among all calculated poses:** "
+                        f"`{best_score:.2f} kcal/mol (kilocalories per mole)`\n"
                         "- This is a Vina scoring-function value for this exact prepared "
                         "receptor, ligand, grid, and search protocol. It is useful for "
                         "within-protocol pose ranking only; it is not experimental binding "
@@ -1137,25 +1185,25 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                     )
                 if d_props and "lipinski_pass" in d_props:
                     st.markdown(
-                        "- **Rule-of-Five screen:** "
+                        "- **Rule-of-Five Screen:** "
                         f"`{d_props['lipinski_violations']}` threshold violation(s). "
-                        "This is a physicochemical heuristic only, not an ADME, safety, "
-                        "or clinical-use prediction."
+                        "This is a physicochemical heuristic only, not an ADME (Absorption, Distribution, Metabolism, and Excretion), "
+                        "safety, or clinical-use prediction."
                     )
 
         # Status badge & warnings
         if val_stat == "validation passed (Top-10 recovery)":
             rec_r = val_det['recovery']['rmsd_angstrom'] if val_det else res['redocking_rmsd']
             st.warning(
-                f"🟡 Gate A Status: {val_stat} (Best Top-10 recovery RMSD = {rec_r} Å <= 2.0 Å). "
+                f"🟡 Gate A Status: {val_stat} — Best Top-10 recovery RMSD (Root-Mean-Square Deviation) = {rec_r} Å (Angstroms) <= 2.0 Å. "
                 "Top-1 did not reproduce the crystal pose; this is not full protocol validation."
             )
         elif val_stat == "validation passed":
-            st.success(f"🎯 Gate A Status: validation passed (RMSD = {res['redocking_rmsd']} Å <= 2.0 Å)")
+            st.success(f"🎯 Gate A Status: validation passed — RMSD (Root-Mean-Square Deviation) = {res['redocking_rmsd']} Å (Angstroms) <= 2.0 Å")
         elif val_stat == "validation failed":
             st.error("❌ Gate A Status: validation failed")
         elif val_stat == "validation unavailable":
-            st.warning("⚠️ Gate A Status: validation unavailable (لا يتطابق عدد الذرات أو الهوية الكيميائية مع المرجع).")
+            st.warning("⚠️ Gate A Status: validation unavailable (atom count or chemical identity does not match the reference ligand).")
         else:
             st.info(f"ℹ️ Status: {val_stat}")
 
@@ -1164,14 +1212,14 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
             t1 = val_det["top1"]
             rec = val_det["recovery"]
             val_summary_md = (
-                f"- **Top-1 Vina pose RMSD:** `{t1['rmsd_angstrom']:.3f} Å` (Score: `{t1['score']} kcal/mol`)\n"
-                f"- **Best Top-10 recovery RMSD:** `{rec['rmsd_angstrom']:.3f} Å` (Seed `{rec['seed']}`, Rank `{rec['rank']}`, Score: `{rec['score']} kcal/mol`)\n"
+                f"- **Top-1 Vina (AutoDock Vina Molecular Docking Engine) pose RMSD (Root-Mean-Square Deviation):** `{t1['rmsd_angstrom']:.3f} Å (Angstroms)` — Score: `{t1['score']} kcal/mol (kilocalories per mole)`\n"
+                f"- **Best Top-10 recovery RMSD (Root-Mean-Square Deviation):** `{rec['rmsd_angstrom']:.3f} Å (Angstroms)` — Seed `{rec['seed']}`, Rank `{rec['rank']}`, Score: `{rec['score']} kcal/mol (kilocalories per mole)`\n"
                 f"- **Recovery cluster support:** `{rec['cluster_seed_count']}` independent seeds `{rec['supporting_seeds']}`"
             )
             if is_advanced_mode:
                 st.markdown(val_summary_md)
             else:
-                with st.expander("🔬 تفاصيل التحقق الإحصائي والحسابي المتقدم (Gate A Metrics)"):
+                with st.expander("🔬 Advanced Statistical & Computational Validation Details (Gate A Metrics)"):
                     st.markdown(val_summary_md)
 
         for w in res.get("warnings", []):
@@ -1179,8 +1227,8 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
 
         # Organized Result Tabs
         tab_3d, tab_poses = st.tabs([
-            "🔮 العرض ثلاثي الأبعاد والتفاعلات (3D & Interactions)",
-            "📋 جدول الوضعيات والعناقيد (Poses & Clusters)"
+            "🔮 3D (Three-Dimensional) View & Contacts",
+            "📋 Poses & Clusters Table"
         ])
 
         with tab_3d:
@@ -1190,7 +1238,7 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                 with c_row1:
                     default_pose_idx = find_recovery_pose_index(res["poses"], res.get("validation_details"))
                     sel_pose_idx = st.selectbox(
-                        "اختر الوضعية (Pose) للعرض:",
+                        "Select Pose to Display:",
                         range(len(res["poses"])),
                         index=default_pose_idx,
                         key=f"dock_pose_selector_{res['run_id']}",
@@ -1200,33 +1248,38 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                         ),
                     )
                 with c_row2:
-                    dock_show_ligand = st.checkbox("إظهار الليجاند (Show Ligand)", value=True, key="dock_single_show_ligand")
+                    dock_show_ligand = st.checkbox("Show Ligand", value=True, key="dock_single_show_ligand")
                     if dock_show_ligand:
-                        dock_lig_style = st.selectbox("نمط الليجاند:", ["أعواد (Sticks)", "أعواد وكرات (Ball & Stick)", "كرات (Spheres)"], key="dock_single_lig_style")
+                        dock_lig_style = st.selectbox("Ligand Style:", ["Sticks", "Ball & Stick", "Spheres"], key="dock_single_lig_style")
                     else:
-                        dock_lig_style = "أعواد (Sticks)"
+                        dock_lig_style = "Sticks"
                 with c_row3:
-                    dock_show_grid = st.checkbox("📦 صندوق البحث (Grid Box)", value=False, key="dock_single_show_grid")
-                    dock_show_surface = st.checkbox("إظهار السطح (Surface)", value=False, key="dock_single_show_surface")
+                    dock_show_grid = st.checkbox("📦 Search Grid Box", value=False, key="dock_single_show_grid")
+                    dock_show_surface = st.checkbox("Show Surface", value=False, key="dock_single_show_surface")
                 with c_row4:
                     if dock_show_surface:
-                        dock_surf_type = st.selectbox("نوع السطح:", ["MS (Molecular Surface)", "SAS", "VDW"], key="dock_single_surf_type")
-                        dock_surf_opacity = st.slider("شفافية السطح:", 0.0, 1.0, 0.3, key="dock_single_surf_opacity")
+                        dock_surf_type = st.selectbox("Surface Type:", ["MS (Molecular Surface)", "SAS (Solvent-Accessible Surface)", "VDW (van der Waals Surface)"], key="dock_single_surf_type")
+                        dock_surf_opacity = st.slider("Surface Opacity:", 0.0, 1.0, 0.3, key="dock_single_surf_opacity")
                     else:
                         dock_surf_type = "MS"
                         dock_surf_opacity = 0.3
 
             validation_details = res.get("validation_details")
             if validation_details and "recovery" in validation_details:
-                recovered = validation_details["recovery"]
+                if validation_details.get("protocol_validated"):
+                    validated_pose = validation_details.get("top1", {})
+                    validated_label = "validated top-1 pose"
+                else:
+                    validated_pose = validation_details["recovery"]
+                    validated_label = "validated Top-10 recovery pose"
                 sel_p = res["poses"][sel_pose_idx]
-                if getattr(sel_p, "seed", None) == recovered.get("seed") and getattr(sel_p, "rank", None) == recovered.get("rank"):
+                if getattr(sel_p, "seed", None) == validated_pose.get("seed") and getattr(sel_p, "rank", None) == validated_pose.get("rank"):
                     st.caption(
-                        "🎯 الوضعية المعروضة: وضعية التحقق المسترجعة ضمن Top-10 "
-                        f"(RMSD {recovered['rmsd_angstrom']:.3f} Å)."
+                        f"🎯 Displayed pose: {validated_label} — "
+                        f"RMSD (Root-Mean-Square Deviation) = {validated_pose['rmsd_angstrom']:.3f} Å (Angstroms)."
                     )
                 else:
-                    st.caption("ℹ️ الوضعية المعروضة باختيار المستخدم؛ وليست بالضرورة وضعية التحقق المسترجعة.")
+                    st.caption("ℹ️ User-selected pose displayed; not necessarily the validated pose.")
 
             # Analyze interactions for selected pose
             active_pose = res["poses"][sel_pose_idx]
@@ -1253,7 +1306,7 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
             # Layout: 60% 3D Viewer, 40% Interactions Details
             col_v3d, col_vint = st.columns([1.5, 1.0])
             with col_v3d:
-                st.caption("🟢 الأخضر: وضعية الدواء المحسوبة | ⚪ الرمادي: موضع الربيطة البلورية المرجعية | 🟣 الوردي: أحماض التماس القطبي")
+                st.caption("🟢 Green: Calculated Ligand Pose | ⚪ Gray: Crystal Reference Ligand | 🟣 Magenta: Polar-Contact Residues")
                 active_pose_pdbqt = active_pose.pdbqt_block
                 polar_candidates = single_inter.get("polar_contact_candidates") or single_inter.get("hbonds", [])
                 view_html = render_docked_complex_3d(
@@ -1269,68 +1322,68 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                     grid_box=res.get("grid"),
                     show_grid_box=dock_show_grid
                 )
-                components.html(view_html, height=520)
+                st.iframe(view_html, height=520)
 
             with col_vint:
                 with st.container(border=True):
-                    st.markdown("##### 🔗 التماسات الوضعية الاستكشافية")
+                    st.markdown("##### 🔗 Exploratory Pose Contacts")
                     st.info(CONTACTS_DISCLAIMER)
                     si_col1, si_col2 = st.columns(2)
                     p_count = single_inter.get("polar_contact_count", single_inter.get("hbond_count", 0))
                     c_count = single_inter.get("carbon_contact_count", single_inter.get("hydrophobic_count", 0))
-                    si_col1.metric("مرشحات التماس القطبي", p_count)
-                    si_col2.metric("مرشحات تماس الكربون", c_count)
+                    si_col1.metric("Polar Contact Candidates", p_count)
+                    si_col2.metric("Carbon Contact Candidates", c_count)
 
                     if polar_candidates:
-                        st.markdown("###### 💧 مرشحات التماس القطبي (Polar Contacts <= 3.5 Å):")
+                        st.markdown("###### 💧 Polar Contact Candidates (<= 3.5 Å [Angstroms]):")
                         df_hb = pd.DataFrame(polar_candidates).rename(columns={
-                            "residue": "الحمض",
-                            "chain": "السلسلة",
-                            "rec_atom": "ذرة المستقبل",
-                            "lig_atom": "ذرة الدواء",
-                            "distance_angstrom": "المسافة (Å)"
-                        })[["الحمض", "السلسلة", "ذرة المستقبل", "ذرة الدواء", "المسافة (Å)"]]
+                            "residue": "Residue",
+                            "chain": "Chain",
+                            "rec_atom": "Receptor Atom",
+                            "lig_atom": "Ligand Atom",
+                            "distance_angstrom": "Distance — Å (Angstroms)"
+                        })[["Residue", "Chain", "Receptor Atom", "Ligand Atom", "Distance — Å (Angstroms)"]]
                         st.dataframe(df_hb, use_container_width=True, hide_index=True, height=160)
                     else:
-                        st.info("لا توجد مرشحات تماس قطبي مباشرة مسافتها <= 3.5 Å في هذه الوضعية.")
+                        st.info("No direct polar contact candidates within <= 3.5 Å (Angstroms) for this pose.")
 
                     if single_inter.get("interacting_residues"):
-                        st.markdown("###### 🧱 أحماض الجيب المحيطة (Contacts <= 4.0 Å):")
+                        st.markdown("###### 🧱 Surrounding Pocket Residues (<= 4.0 Å [Angstroms]):")
                         df_ir = pd.DataFrame(single_inter["interacting_residues"]).rename(columns={
-                            "res_name": "الحمض",
-                            "res_num": "الرقم",
-                            "chain": "السلسلة",
-                            "min_distance": "أقرب مسافة (Å)"
-                        })[["الحمض", "الرقم", "السلسلة", "أقرب مسافة (Å)"]]
+                            "res_name": "Residue",
+                            "res_num": "Number",
+                            "chain": "Chain",
+                            "min_distance": "Min Distance — Å (Angstroms)"
+                        })[["Residue", "Number", "Chain", "Min Distance — Å (Angstroms)"]]
                         st.dataframe(df_ir, use_container_width=True, hide_index=True, height=160)
 
         with tab_poses:
             poses_data = [
                 {
-                    "الترتيب (Rank)": p.rank,
-                    "درجة الإرساء (Vina، kcal/mol)": p.score,
-                    "البذرة (Seed)": p.seed,
-                    "المجموعة (Cluster)": p.cluster_id,
-                    "RMSD l.b.": p.rmsd_lb,
-                    "RMSD u.b.": p.rmsd_ub,
-                    "RMSD للمرجع (Å)": f"{p.rmsd_to_reference:.3f}" if p.rmsd_to_reference is not None else "—"
+                    "Rank": p.rank,
+                    "Vina (AutoDock Vina Molecular Docking Engine) Score — kcal/mol (kilocalories per mole)": p.score,
+                    "Seed": p.seed,
+                    "Cluster": p.cluster_id,
+                    "RMSD l.b. (Root-Mean-Square Deviation Lower Bound)": p.rmsd_lb,
+                    "RMSD u.b. (Root-Mean-Square Deviation Upper Bound)": p.rmsd_ub,
+                    "Reference RMSD (Root-Mean-Square Deviation) — Å (Angstroms)": f"{p.rmsd_to_reference:.3f}" if p.rmsd_to_reference is not None else "—"
                 }
                 for p in res["poses"]
             ]
             df_poses = pd.DataFrame(poses_data)
 
-            st.markdown("#### 📋 جدول كافة الوضعيات المحسوبة (Calculated Poses)")
+            st.markdown("#### 📋 Calculated Poses Table")
             st.dataframe(df_poses, use_container_width=True, hide_index=True)
 
             if res.get("clusters"):
-                st.markdown("#### 👥 مجموعات الوضعيات والعناقيد (Pose Clusters)")
+                st.markdown("#### 👥 Pose Clusters")
                 cl_data = [
                     {
-                        "المجموعة (Cluster)": cl.cluster_id,
-                        "عدد البذور الداعمة": cl.seed_count,
-                        "البذور": str(cl.supporting_seeds),
-                        "أفضل درجة (kcal/mol)": cl.top_score,
-                        "الدرجة الوسيطة (kcal/mol)": cl.median_score
+                        "Cluster": cl.cluster_id,
+                        "Supporting Seeds Count": cl.seed_count,
+                        "Seeds": str(cl.supporting_seeds),
+                        "Top Score — kcal/mol (kilocalories per mole)": cl.top_score,
+                        "Median Score — kcal/mol (kilocalories per mole)": cl.median_score
                     }
                     for cl in res["clusters"]
                 ]
@@ -1339,13 +1392,13 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
 
 
 def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False):
-    st.subheader("⚖️ مقارنة الإرساء بين السليم والمصاب ومحاكاة الربائط (Comparative Docking)")
+    st.subheader("⚖️ Comparative Docking Analysis — WT (Wild-Type Reference) vs. MT (Mutant Variant)")
 
     h_active_pdb = st.session_state.get("h_assembly_pdb") or st.session_state.get("h_pdb") or ""
     m_active_pdb = st.session_state.get("m_assembly_pdb") or st.session_state.get("m_pdb") or ""
 
     if not h_active_pdb or not m_active_pdb:
-        st.warning("يرجى تحميل بيانات البروتين السليم والمصاب أولاً من التبويب الأول (التحليل الهيكلي).")
+        st.warning("Please load both WT (Wild-Type Reference) and MT (Mutant Variant) structures in Tab 1 (Structural Analysis) first.")
         return
 
     # Extract available protein chains
@@ -1361,29 +1414,29 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
 
     # 1. Workflow Selection
     workflow_mode = st.radio(
-        "مسار التحليل (Workflow):",
+        "Comparison Workflow:",
         ["matched_variant", "exploratory_cross"],
         format_func=lambda w: (
-            "⚖️ مقارنة البروتين السليم مع الطافر المتطابق (Matched WT-vs-Variant) [يتطلب تطابق تسلسلي >= 90%]"
+            "⚖️ Matched WT (Wild-Type Reference) vs. MT (Mutant Variant) Comparison [Requires >= 90% Sequence Identity]"
             if w == "matched_variant"
-            else "🔀 إرساء استكشاري عبر بروتينات مستقلة (Exploratory Cross-Protein Docking) [أي بروتينين/جيبين بدون ΔScore]"
+            else "🔀 Exploratory Cross-Protein Docking [Independent Proteins/Pockets; No ΔScore (Docking Score Difference)]"
         ),
         horizontal=True,
         key="comp_workflow_choice",
     )
 
     # Optional documented example preset (never hardcoded as default)
-    with st.expander("📋 تحميل مثال توثيقي اختياري (Load Documented Example)", expanded=False):
+    with st.expander("📋 Load Documented Example (Optional)", expanded=False):
         st.info(
-            "هذا مثال توثيقي إرشادي فقط لمستقبل EGFR Kinase Domain مع دواء Erlotinib وطفرة T790M. "
-            "ليس إعداداً افتراضياً عاماً لأي بروتين آخر."
+            "This is a documented illustrative example only for the EGFR (Epidermal Growth Factor Receptor) Kinase Domain "
+            "with Erlotinib and the T790M mutation. It is not a generic default for other proteins."
         )
-        if st.button("تحميل بيانات مثال EGFR التوثيقي", key="btn_load_egfr_preset"):
-            st.session_state["comp_pocket_val"] = "A:790, A:858"
+        if st.button("Load EGFR (Epidermal Growth Factor Receptor) Documented Example", key="btn_load_egfr_preset"):
+            st.session_state["comp_pocket_val"] = "A:766, A:769, A:834"
             st.session_state["comp_domain_val"] = "Kinase Domain"
             st.session_state["comp_lig_name_val"] = "Erlotinib"
             st.session_state["comp_smiles_val"] = "COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC"
-            st.session_state["comp_pocket_input"] = "A:790, A:858"
+            st.session_state["comp_pocket_input"] = "A:766, A:769, A:834"
             st.session_state["comp_domain_input"] = "Kinase Domain"
             st.session_state["comp_lig_name_input"] = "Erlotinib"
             st.session_state["comp_smiles_input"] = "COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC"
@@ -1410,50 +1463,50 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
     r1_pocket_res = ""
     r2_pocket_res = ""
 
-    # 1. بطاقة بروتينات المقارنة وجيب الارتباط
+    # 1. Target Proteins & Binding Site Card
     with st.container(border=True):
         if workflow_mode == "matched_variant":
-            st.markdown("#### 🏛️ 1️⃣ المستقبلات المستهدفة وفحص التطابق المتكافئ (WT vs Variant)")
+            st.markdown("#### 🏛️ 1️⃣ Target Receptors & Homologous Pair Validation — WT (Wild-Type Reference) vs. MT (Mutant Variant)")
             col_m1, col_m2, col_m3, col_m4 = st.columns(4)
             with col_m1:
-                st.metric("البروتين السليم (WT)", st.session_state.get("h_id", "WT"))
+                st.metric("WT (Wild-Type Reference)", st.session_state.get("h_id", "WT"))
                 h_chain = st.selectbox(
-                    "سلسلة السليم (WT Chain):",
+                    "WT (Wild-Type Reference) Chain:",
                     h_chains,
                     index=h_chains.index(h_chain_default) if h_chain_default in h_chains else 0,
                     key="comp_h_chain_sel",
                 )
             with col_m2:
-                st.metric("البروتين المصاب (Mutant)", st.session_state.get("m_id", "MUTANT"))
+                st.metric("MT (Mutant Variant)", st.session_state.get("m_id", "MUTANT"))
                 m_chain = st.selectbox(
-                    "سلسلة المصاب (Mutant Chain):",
+                    "MT (Mutant Variant) Chain:",
                     m_chains,
                     index=m_chains.index(m_chain_default) if m_chain_default in m_chains else 0,
                     key="comp_m_chain_sel",
                 )
             with col_m3:
                 pocket_res = st.text_input(
-                    "أحماض جيب البروتين السليم (WT Pocket):",
+                    "WT (Wild-Type Reference) Pocket Residues:",
                     value=default_pocket,
-                    placeholder="مثال: A:790, A:858 أو B:6",
+                    placeholder="e.g., A:790, A:858 or B:6",
                     key="comp_pocket_input",
                 )
             with col_m4:
                 target_domain = st.text_input(
-                    "النطاق الوظيفي (Domain):",
+                    "Functional Domain:",
                     value=default_domain,
-                    placeholder="مثال: Kinase Domain",
+                    placeholder="e.g., Kinase Domain",
                     key="comp_domain_input",
                 )
                 separate_domains = st.checkbox(
-                    "النطاق الوظيفي يختلف بين السليم والطافر (Strict domain check)",
+                    "Domain differs between WT and MT (Strict Domain Check)",
                     value=False,
                     key="comp_domain_separate",
-                    help="عند التفعيل يُقارن نطاق كل بروتين على حدة، ويُرفض حساب ΔScore إذا اختلف النطاقان.",
+                    help="When enabled, each protein's domain is checked separately and ΔScore (Docking Score Difference) calculation is blocked if domains differ.",
                 )
                 if separate_domains:
                     mutant_target_domain = st.text_input(
-                        "النطاق الوظيفي للطافر (Mutant domain):",
+                        "MT (Mutant Variant) Functional Domain:",
                         value=target_domain,
                         key="comp_mutant_domain_input",
                     )
@@ -1471,12 +1524,12 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
 
             if not pair_val["is_valid"]:
                 st.error(pair_val["error"])
-                st.info("💡 إذا كنت تقارن بروتينين مختلفين، يرجى التبديل إلى مسار 'الإرساء الاستكشاري عبر بروتينات مستقلة' بالأعلى.")
+                st.info("💡 If you are comparing two distinct proteins, switch to the 'Exploratory Cross-Protein Docking' workflow above.")
             else:
                 st.success(
-                    f"✅ زوج متطابق معتمد (نسبة التطابق التسلسلي: {pair_val['identity_pct']:.1f}% >= {MIN_MATCHED_PAIR_IDENTITY:.1f}%) | "
-                    f"عدد الأحماض المتحاذية: {pair_val['aligned_residue_count']} | "
-                    f"عدد الطفرات: {pair_val['mutation_count']}"
+                    f"✅ Validated Homologous Pair (Sequence Identity: {pair_val['identity_pct']:.1f}% >= {MIN_MATCHED_PAIR_IDENTITY:.1f}%) | "
+                    f"Aligned Residues: {pair_val['aligned_residue_count']} | "
+                    f"Mutations: {pair_val['mutation_count']}"
                 )
 
                 # Show mapped pocket residues table
@@ -1491,36 +1544,36 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                         m_r = pair_val["mapping"].get(h_r)
                         if not m_r and ":" not in h_r and h_chain:
                             m_r = pair_val["mapping"].get(f"{h_chain}:{h_r}")
-                        status_str = "✅ تم التعيين" if m_r else "❌ غير موجود في المصاب"
+                        status_str = "✅ Mapped" if m_r else "❌ Not found in MT (Mutant Variant)"
                         mapping_rows.append({
-                            "حمض السليم (WT)": h_r,
-                            "حمض المصاب المقابل (Mapped Variant)": m_r or "None",
-                            "الحالة": status_str,
+                            "WT (Wild-Type Reference) Residue": h_r,
+                            "Mapped MT (Mutant Variant) Residue": m_r or "None",
+                            "Mapping Status": status_str,
                         })
 
-                    st.markdown("##### 🗺️ جدول تعيين أحماض الجيب (Mapped Binding Site Residues):")
+                    st.markdown("##### 🗺️ Mapped Binding-Site Residues:")
                     st.dataframe(pd.DataFrame(mapping_rows), use_container_width=True, hide_index=True)
 
                     if unmapped_h_res:
-                        st.warning(f"⚠️ أحماض غير معثور عليها في المصاب: {', '.join(unmapped_h_res)}")
+                        st.warning(f"⚠️ Unmapped residues not found in MT (Mutant Variant): {', '.join(unmapped_h_res)}")
 
                     # Manual override option with explicit reason recorded in manifest
                     override_pocket = st.checkbox(
-                        "⚙️ تعديل يدوي لأحماض جيب المصاب (Manual Pocket Override)",
+                        "⚙️ Manual MT (Mutant Variant) Pocket Override",
                         key="chk_comp_override_pocket",
                     )
                     if override_pocket:
                         col_ov1, col_ov2 = st.columns(2)
                         with col_ov1:
                             m_pocket_override_str = st.text_input(
-                                "أحماض جيب المصاب المعدلة:",
+                                "Overridden MT (Mutant Variant) Pocket Residues:",
                                 value=", ".join(mapped_m_res),
                                 key="comp_override_m_pocket_input",
                             )
                         with col_ov2:
                             override_reason = st.text_input(
-                                "سبب التعديل اليدوي (إلزامي للتوثيق في Manifest):",
-                                placeholder="مثال: ترقيم بديل لـ PDB أو نتوء تركيبي مثبت تجريبياً",
+                                "Override Reason (required for manifest provenance):",
+                                placeholder="e.g., Alternate PDB (Protein Data Bank) numbering or experimentally validated shift",
                                 key="comp_override_reason_input",
                             )
                         final_m_res_list = [r.strip() for r in m_pocket_override_str.split(",") if r.strip()]
@@ -1531,48 +1584,48 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                     final_m_res_list = []
 
             # Optional WT Reference Ligand expander (Section 5)
-            with st.expander("🔬 التحقق الاختياري من البروتوكول بربيطة مرجعية متبلورة (WT Reference Co-crystal)", expanded=False):
-                st.caption("اختياري: لتأكيد دقة وضعية الارتباط تجريبياً عبر إعادة إرساء الربيطة المتبلورة في السليم وتحديد حالة التحقق العلمية.")
+            with st.expander("🔬 Optional Protocol Validation via WT (Wild-Type Reference) Co-Crystal Ligand", expanded=False):
+                st.caption("Optional: redock the co-crystallized WT reference ligand to determine empirical pose-reproduction validation status.")
                 cr_col1, cr_col2, cr_col3, cr_col4 = st.columns(4)
                 with cr_col1:
-                    ref_lig_name = st.text_input("رمز الربيطة المرجعية (Resname):", placeholder="مثال: AQ4 أو STI", key="comp_ref_lig_resname")
+                    ref_lig_name = st.text_input("Reference Ligand Code (Resname):", placeholder="e.g., AQ4 or STI", key="comp_ref_lig_resname")
                 with cr_col2:
-                    ref_lig_chain = st.text_input("سلسلة الربيطة (Chain):", placeholder="مثال: A", key="comp_ref_lig_chain")
+                    ref_lig_chain = st.text_input("Ligand Chain:", placeholder="e.g., A", key="comp_ref_lig_chain")
                 with cr_col3:
-                    ref_lig_seq = st.text_input("رقم حمض الربيطة (Residue No):", placeholder="مثال: 1001", key="comp_ref_lig_seq")
+                    ref_lig_seq = st.text_input("Ligand Residue Number:", placeholder="e.g., 1001", key="comp_ref_lig_seq")
                 with cr_col4:
-                    ref_lig_smiles = st.text_input("صيغة SMILES المرجعية (اختياري):", placeholder="تُجلب من RCSB إن تُركت فارغة", key="comp_ref_lig_smiles")
+                    ref_lig_smiles = st.text_input("Reference SMILES (optional):", placeholder="Fetched from RCSB PDB if left blank", key="comp_ref_lig_smiles")
 
         else:
             # Exploratory Cross-Protein Docking UI
-            st.markdown("#### 🏛️ 1️⃣ المستقبلات المستقلة والجيوب المنفصلة (Exploratory Cross-Protein)")
-            st.caption("يتيح إرساء أي بروتينين بصناديق بحث مستقلة تماماً بدون حساب ΔScore.")
+            st.markdown("#### 🏛️ 1️⃣ Independent Receptors & Separate Pockets (Exploratory Cross-Protein)")
+            st.caption("Docks any two proteins with completely independent search boxes without computing ΔScore (Docking Score Difference).")
             col_xp1, col_xp2, col_xp3, col_xp4 = st.columns(4)
             with col_xp1:
-                st.metric("المستقبل 1 (Receptor 1)", st.session_state.get("h_id", "REC1"))
-                h_chain = st.selectbox("سلسلة المستقبل 1:", h_chains, index=0, key="cross_r1_chain_sel")
+                st.metric("Receptor 1", st.session_state.get("h_id", "REC1"))
+                h_chain = st.selectbox("Receptor 1 Chain:", h_chains, index=0, key="cross_r1_chain_sel")
             with col_xp2:
-                st.metric("المستقبل 2 (Receptor 2)", st.session_state.get("m_id", "REC2"))
-                m_chain = st.selectbox("سلسلة المستقبل 2:", m_chains, index=0, key="cross_r2_chain_sel")
+                st.metric("Receptor 2", st.session_state.get("m_id", "REC2"))
+                m_chain = st.selectbox("Receptor 2 Chain:", m_chains, index=0, key="cross_r2_chain_sel")
             with col_xp3:
                 r1_pocket_res = st.text_input(
-                    "أحماض جيب المستقبل 1:",
+                    "Receptor 1 Pocket Residues:",
                     value=default_pocket,
-                    placeholder="مثال: A:100, A:105",
+                    placeholder="e.g., A:100, A:105",
                     key="cross_r1_pocket_input",
                 )
             with col_xp4:
                 r2_pocket_res = st.text_input(
-                    "أحماض جيب المستقبل 2:",
-                    placeholder="مثال: B:50, B:55",
+                    "Receptor 2 Pocket Residues:",
+                    placeholder="e.g., B:50, B:55",
                     key="cross_r2_pocket_input",
                 )
-            target_domain = st.text_input("الوصف / النطاق الوظيفي:", value="Cross-protein exploratory", key="cross_domain_input")
+            target_domain = st.text_input("Description / Functional Domain:", value="Cross-protein exploratory", key="cross_domain_input")
 
-    # 2. تبويبات سير العمل لمقارنة الإرساء
+    # 2. Comparative Docking Workflow Tabs
     tab_single_comp, tab_panel_screen = st.tabs([
-        "🔬 مقارنة دواء محدد (Single Drug Analysis)",
-        "💊 الفرز الافتراضي لباقة أدوية (Multi-Drug Panel Screening)"
+        "🔬 Single Drug Comparison",
+        "💊 Multi-Drug Panel Virtual Screening"
     ])
 
     with tab_single_comp:
@@ -1580,21 +1633,21 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
         comp_drug_props = None
 
         with st.container(border=True):
-            st.markdown("#### 💊 2️⃣ مواصفات الدواء ومعاملات المحاكاة")
-            # 🔍 البحث المباشر في PubChem
+            st.markdown("#### 💊 2️⃣ Drug Specification & Simulation Parameters")
+            # Direct PubChem search
             col_cpc1, col_cpc2 = st.columns([2.2, 1.0])
             with col_cpc1:
                 comp_pubchem_query = st.text_input(
-                    "🔍 البحث عن دواء في PubChem:",
-                    placeholder="مثال: Gefitinib, Osimertinib, Erlotinib",
+                    "🔍 Search Drug in PubChem:",
+                    placeholder="e.g., Gefitinib, Osimertinib, Erlotinib",
                     key="comp_pubchem_search_input"
                 )
             with col_cpc2:
                 st.write("")
                 st.write("")
-                if st.button("🌐 جلب الدواء", key="btn_comp_pubchem_fetch", use_container_width=True):
+                if st.button("🌐 Fetch Drug", key="btn_comp_pubchem_fetch", use_container_width=True):
                     if comp_pubchem_query.strip():
-                        with st.spinner(f"جارٍ البحث عن '{comp_pubchem_query}' في PubChem..."):
+                        with st.spinner(f"Searching PubChem for '{comp_pubchem_query}'..."):
                             pc_res = fetch_drug_from_pubchem(comp_pubchem_query)
                             if pc_res.get("success"):
                                 st.session_state["comp_lig_name_val"] = pc_res["title"]
@@ -1606,68 +1659,71 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                                     "smiles": pc_res.get("smiles", ""),
                                 }
                                 st.success(
-                                    f"✅ تم جلب {pc_res['title']} (PubChem CID: {pc_res.get('cid')})!"
+                                    f"✅ Fetched {pc_res['title']} (PubChem CID [Compound Identifier]: {pc_res.get('cid')})!"
                                 )
                                 st.rerun()
                             else:
-                                st.error(pc_res.get("error", "فشل البحث في PubChem."))
+                                st.error(pc_res.get("error", "PubChem lookup failed."))
                     else:
-                        st.warning("يرجى إدخال اسم الدواء أولاً.")
+                        st.warning("Please enter a drug name first.")
 
             col_cdn1, col_cdn2 = st.columns([1, 1.6])
             with col_cdn1:
-                lig_name = st.text_input("اسم الدواء:", value=default_l_name, key="comp_lig_name_input")
+                lig_name = st.text_input("Drug Name:", value=default_l_name, key="comp_lig_name_input")
             with col_cdn2:
-                lig_smiles = st.text_input("صيغة SMILES:", value=default_smiles, key="comp_smiles_input")
+                lig_smiles = st.text_input("SMILES (Simplified Molecular-Input Line-Entry System):", value=default_smiles, key="comp_smiles_input")
 
-            # 🧪 المعاينة الكيميائية ثنائية الأبعاد والخصائص الصيدلانية
+            # 2D chemical depiction and pharmacological properties
             if lig_smiles.strip():
-                tab_c_struct, tab_c_lip = st.tabs(["🧪 التركيب الكيميائي 2D", "📊 خصائص ليبينسكي (ADME)"])
+                tab_c_struct, tab_c_lip = st.tabs(["🧪 2D Chemical Structure", "📊 Lipinski Rules — ADME (Absorption, Distribution, Metabolism, and Excretion)"])
                 with tab_c_struct:
                     comp_svg_2d = generate_2d_depiction_svg(lig_smiles, width=320, height=160)
                     if comp_svg_2d:
                         try:
-                            st.image(comp_svg_2d, caption="التركيب الكيميائي ثنائي الأبعاد (2D Depiction)", use_container_width=True)
+                            st.image(comp_svg_2d, caption="2D (Two-Dimensional) Chemical Structure Depiction", use_container_width=True)
                         except Exception:
-                            st.caption("تعذر عرض المخطط ثنائي الأبعاد.")
+                            st.caption("Could not display 2D chemical depiction.")
                     else:
-                        st.caption("تعذر إنشاء المخطط ثنائي الأبعاد لصيغة SMILES الحالية.")
+                        st.caption("Could not generate 2D chemical depiction for the current SMILES string.")
                 with tab_c_lip:
                     comp_drug_props = calculate_drug_properties(lig_smiles)
                     if comp_drug_props and "error" not in comp_drug_props:
                         cdp1, cdp2, cdp3 = st.columns(3)
-                        cdp1.metric("الوزن الجزيئي", f"{comp_drug_props['molecular_weight']} Da")
-                        cdp2.metric("LogP", f"{comp_drug_props['logp']}")
-                        cdp3.metric("TPSA", f"{comp_drug_props['tpsa']} Å²")
+                        cdp1.metric("MW (Molecular Weight)", f"{comp_drug_props['molecular_weight']} Da (Daltons / atomic mass units)")
+                        cdp2.metric("logP (Octanol–Water Partition Coefficient)", f"{comp_drug_props['logp']}")
+                        cdp3.metric("TPSA (Topological Polar Surface Area)", f"{comp_drug_props['tpsa']} Å² (square Angstroms)")
                         cdp4, cdp5, cdp6 = st.columns(3)
-                        cdp4.metric("مانح H-Bond", comp_drug_props['hbd'])
-                        cdp5.metric("مستقبل H-Bond", comp_drug_props['hba'])
-                        cdp6.metric("الروابط الدوارة", comp_drug_props['rotatable_bonds'])
+                        cdp4.metric("HBD (Hydrogen-Bond Donors)", comp_drug_props['hbd'])
+                        cdp5.metric("HBA (Hydrogen-Bond Acceptors)", comp_drug_props['hba'])
+                        cdp6.metric("Rotatable Bonds", comp_drug_props['rotatable_bonds'])
                         if comp_drug_props['lipinski_pass']:
-                            st.caption(f"✅ فحص معايير ليبينسكي: {comp_drug_props.get('lipinski_violations', 0)} تجاوزات. معيار فيزيائي-كيميائي أولي وليس تنبؤاً بامتصاص أو أمان سريري.")
+                            st.caption(
+                                f"✅ Lipinski's Rule of Five Screen: {comp_drug_props.get('lipinski_violations', 0)} violation(s). "
+                                "Physicochemical heuristic only, not a prediction of clinical absorption or safety."
+                            )
                         else:
                             st.caption(f"⚠️ {comp_drug_props['drug_likeness']}")
                         if comp_drug_props.get("pains_alert"):
                             st.warning(
-                                "⚠️ تنبيه PAINS: النمط الكيميائي قد يسبب تداخلاً في الفحوص "
+                                "⚠️ PAINS (Pan-Assay Interference Compounds) Alert: Chemotype may cause assay interference "
                                 f"({comp_drug_props.get('pains_name', 'PAINS')})."
                             )
                         if comp_drug_props.get("aggregation_risk"):
                             st.warning(
-                                f"⚠️ خطر تجمّع heuristic: {comp_drug_props.get('aggregation_note', '')}"
+                                f"⚠️ Heuristic Aggregation Risk: {comp_drug_props.get('aggregation_note', '')}"
                             )
 
             st.markdown("---")
             if is_advanced_mode:
-                st.markdown("##### ⚙️ إعدادات المقارنة المتقدمة:")
+                st.markdown("##### ⚙️ Advanced Comparison Settings:")
                 col_mc1, col_mc2 = st.columns(2)
                 with col_mc1:
-                    exh = st.select_slider("دقة البحث (Exhaustiveness):", options=[4, 8, 16, 32], value=8, key="comp_exh")
+                    exh = st.select_slider("Search Exhaustiveness:", options=[4, 8, 16, 32], value=8, key="comp_exh")
                 with col_mc2:
-                    st.caption("🔬 يتم تطبيق نفس الإعدادات الصارمة على البروتينين بالتوازي عبر 3 بذور مستقلة لضمان التكافؤ الإحصائي التام.")
+                    st.caption("🔬 Identical strict protocol settings are applied to both receptors across 3 independent seeds to ensure statistical equivalence.")
             else:
                 exh = 8
-                st.caption("⚡ **النمط الاستكشافي السريع:** دقة البحث = 8 | فحص البروتينين بالتوازي عبر 3 بذور مستقلة.")
+                st.caption("⚡ **Quick Exploratory Mode:** Search Exhaustiveness = 8 | Parallel docking across 3 independent seeds.")
 
         h_coordinate_source = (
             "biological_assembly_1"
@@ -1705,9 +1761,9 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
         st.session_state["dock_comp_input_fingerprint"] = current_comp_fp
 
         btn_label = (
-            "🚀 تشغيل المقارنة للدواء المحدد (Run Matched Comparison)"
+            "🚀 Run Matched Comparison"
             if workflow_mode == "matched_variant"
-            else "🚀 تشغيل الإرساء الاستكشاري المنفصل (Run Exploratory Docking)"
+            else "🚀 Run Exploratory Cross-Protein Docking"
         )
 
         if st.button(btn_label, type="primary", key="btn_run_comp_main"):
@@ -1720,13 +1776,13 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                     st.error("Docking was not run: define a validated binding site.")
                     return
                 if not target_domain.strip():
-                    st.error("يرجى إدخال النطاق الوظيفي (Domain) المطلوب.")
+                    st.error("Please enter the required functional domain.")
                     return
                 if not lig_name.strip():
-                    st.error("يرجى إدخال اسم الدواء.")
+                    st.error("Please enter the drug name.")
                     return
                 if not lig_smiles.strip():
-                    st.error("يرجى إدخال صيغة SMILES للدواء.")
+                    st.error("Please enter the drug SMILES (Simplified Molecular-Input Line-Entry System) string.")
                     return
 
                 # Strict pair validation check
@@ -1736,11 +1792,11 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
 
                 # Check manual override requirements
                 if st.session_state.get("chk_comp_override_pocket") and not override_reason.strip():
-                    st.error("يرجى ذكر سبب التعديل اليدوي لجيب المصاب لتوثيقه في الـ Manifest.")
+                    st.error("Please provide a reason for the manual MT (Mutant Variant) pocket override for manifest provenance.")
                     return
 
                 if not final_m_res_list:
-                    st.error("جيب البروتين المصاب غير محدد أو لم يتم تعيين أي حمض مقابل.")
+                    st.error("MT (Mutant Variant) binding pocket is undefined or no homologous residues were mapped.")
                     return
 
                 # Optional WT reference ligand extraction
@@ -1761,7 +1817,7 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                             "ref_smiles": ref_lig_smiles.strip() if ref_lig_smiles.strip() else None,
                         }
                     except Exception as ex_ref:
-                        st.warning(f"تعذر استخراج الربيطة المرجعية: {ex_ref}")
+                        st.warning(f"Could not extract reference ligand: {ex_ref}")
 
                 pair_validation_meta = {
                     "is_valid": pair_val["is_valid"],
@@ -1778,7 +1834,7 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                     "override_reason": override_reason,
                 }
 
-                with st.spinner("جاري تنفيذ الإرساء المتطابق للسليم والمصاب عبر 3 بذور مستقلة..."):
+                with st.spinner("Running matched WT (Wild-Type Reference) vs. MT (Mutant Variant) docking across 3 independent seeds..."):
                     h_meta = {"pdb_id": st.session_state.get("h_id"), "target_domain": target_domain, "created_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat()}
                     m_meta = {"pdb_id": st.session_state.get("m_id"), "target_domain": mutant_target_domain, "created_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat()}
 
@@ -1802,9 +1858,9 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                         )
                         comp_result["input_fingerprint"] = current_comp_fp
                         st.session_state["matched_comparison_result"] = comp_result
-                        st.success("✅ اكتملت المقارنة بنجاح!")
+                        st.success("✅ Matched comparison completed successfully!")
                     except Exception as e:
-                        st.error(f"❌ فشلت المقارنة: {e}")
+                        st.error(f"❌ Matched comparison failed: {e}")
 
             else:
                 # Exploratory cross-protein docking
@@ -1818,10 +1874,10 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                     st.error("Exploratory docking requires pocket residues defined for both receptors.")
                     return
                 if not lig_name.strip():
-                    st.error("يرجى إدخال اسم الدواء.")
+                    st.error("Please enter the drug name.")
                     return
                 if not lig_smiles.strip():
-                    st.error("يرجى إدخال صيغة SMILES للدواء.")
+                    st.error("Please enter the drug SMILES (Simplified Molecular-Input Line-Entry System) string.")
                     return
 
                 # Validate pocket chains match selected chains (Section 4)
@@ -1829,10 +1885,10 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                     validate_pocket_chain(r1_res_list, h_chain, "Receptor 1")
                     validate_pocket_chain(r2_res_list, m_chain, "Receptor 2")
                 except ValueError as chain_err:
-                    st.error(f"❌ خطأ في السلاسل المحددة: {chain_err}")
+                    st.error(f"❌ Selected chain mismatch: {chain_err}")
                     return
 
-                with st.spinner("جاري تنفيذ الإرساء الاستكشاري المنفصل للمستقبلين عبر 3 بذور مستقلة..."):
+                with st.spinner("Running independent exploratory cross-protein docking across 3 independent seeds..."):
                     r1_meta = {
                         "pdb_id": st.session_state.get("h_id", "REC1"),
                         "selected_chain": h_chain,
@@ -1862,33 +1918,33 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                             keep_waters=keep_crystal_waters,
                         )
                         st.session_state["exploratory_cross_result"] = cross_result
-                        st.success("✅ اكتمل الإرساء الاستكشاري بنجاح!")
+                        st.success("✅ Exploratory cross-protein docking completed successfully!")
                     except Exception as e:
-                        st.error(f"❌ فشل الإرساء الاستكشاري: {e}")
+                        st.error(f"❌ Exploratory cross-protein docking failed: {e}")
 
         # Render Matched Results
         comp = st.session_state.get("matched_comparison_result")
         if workflow_mode == "matched_variant" and comp:
             st.markdown("---")
-            st.subheader(f"📊 نتائج المقارنة الإرسائية: {comp['comparison_label']}")
+            st.subheader(f"📊 Comparative Docking Results: {comp['comparison_label']}")
 
             # Validation status badge and reason
             val_status = comp.get("validation_status", "exploratory—no reference validation")
             val_reason = comp.get("validation_reason", "")
             val_norm = str(val_status).strip().lower()
             if val_norm == "protocol validated on wt reference":
-                st.success("🏆 **حالة التحقق العلمي:** Protocol validated on WT reference")
+                st.success("🏆 **Scientific Validation Status:** Protocol validated on WT (Wild-Type Reference) reference")
             elif val_norm in ("exploratory—no reference validation", "exploratory: no pose validation"):
-                st.info("🧪 **حالة التحقق العلمي:** Exploratory: no reference validation")
+                st.info("🧪 **Scientific Validation Status:** Exploratory: no reference validation")
             else:
-                st.warning("⚠️ **حالة التحقق العلمي:** Not validated for affinity comparison")
+                st.warning("⚠️ **Scientific Validation Status:** Not validated for affinity comparison")
 
             if val_reason:
-                st.caption(f"📝 **تفسير حالة التحقق:** {val_reason}")
+                st.caption(f"📝 **Validation Rationale:** {val_reason}")
             mutant_val_status = comp.get("mutant_validation_status")
             if mutant_val_status and mutant_val_status != val_status:
                 st.caption(
-                    f"🧬 **حالة الذراع الطافر:** {mutant_val_status} — "
+                    f"🧬 **MT (Mutant Variant) Arm Status:** {mutant_val_status} — "
                     f"{comp.get('mutant_validation_reason', '')}"
                 )
 
@@ -1897,19 +1953,19 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                 t1 = redocking_val["top1"]
                 rec = redocking_val["recovery"]
                 cutoff = redocking_val.get("rmsd_cutoff", 2.0)
-                with st.expander("🔬 تفاصيل التحقق الإحصائي لإعادة إرساء المرجع (WT Redocking RMSD Metrics)"):
+                with st.expander("🔬 WT (Wild-Type Reference) Redocking Validation Metrics — RMSD (Root-Mean-Square Deviation)"):
                     st.markdown(
-                        f"- **معيار القبول (RMSD Cutoff):** `<= {cutoff} Å`\n"
-                        f"- **Top-1 Vina pose RMSD:** `{t1['rmsd_angstrom']:.3f} Å` (Score: `{t1['score']} kcal/mol`)\n"
-                        f"- **Best Top-10 recovery RMSD:** `{rec['rmsd_angstrom']:.3f} Å` (Seed `{rec['seed']}`, Rank `{rec['rank']}`, Score: `{rec['score']} kcal/mol`)\n"
-                        f"- **دعم البذور المستقلة للعنقود:** `{rec['cluster_seed_count']}` بذور `{rec['supporting_seeds']}`\n"
-                        f"- **طريقة الحساب:** `{redocking_val.get('method', 'symmetry-aware heavy-atom mapped RMSD (no-fit)')}`"
+                        f"- **Acceptance Cutoff — RMSD (Root-Mean-Square Deviation):** `<= {cutoff} Å (Angstroms)`\n"
+                        f"- **Top-1 Vina (AutoDock Vina Molecular Docking Engine) pose RMSD:** `{t1['rmsd_angstrom']:.3f} Å (Angstroms)` — Score: `{t1['score']} kcal/mol (kilocalories per mole)`\n"
+                        f"- **Best Top-10 recovery RMSD:** `{rec['rmsd_angstrom']:.3f} Å (Angstroms)` — Seed `{rec['seed']}`, Rank `{rec['rank']}`, Score: `{rec['score']} kcal/mol (kilocalories per mole)`\n"
+                        f"- **Independent seed support for cluster:** `{rec['cluster_seed_count']}` seeds `{rec['supporting_seeds']}`\n"
+                        f"- **Mapping method:** `{redocking_val.get('method', 'symmetry-aware heavy-atom mapped RMSD (no-fit)')}`"
                     )
 
             # Protonation assumption note (Section 6)
             st.info(f"ℹ️ {comp.get('protonation_note', PROTONATION_ASSUMPTION_NOTE)}")
 
-            # ── حساب التفاعلات الصيدلانية ──
+            # Calculate pharmacological interactions
             h_clean_text = ""
             m_clean_text = ""
             try:
@@ -1933,52 +1989,89 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
             m_pocket_list = comp["mutant"].get("pocket_residues", [])
 
             comp_inter = compare_interactions(h_inter, m_inter, mutation_residue_nums=h_pocket_list)
-            score_diff_info = interpret_score_difference(comp["delta_score"])
+            delta_score = comp.get("delta_score")
+            score_diff_info = (
+                interpret_score_difference(
+                    delta_score,
+                    comp.get("delta_score_uncertainty_kcal"),
+                )
+                if delta_score is not None
+                else None
+            )
 
             # Top KPI Metric Cards
             with st.container(border=True):
                 kpi_c1, kpi_c2, kpi_c3, kpi_c4 = st.columns(4)
-                kpi_c1.metric("السليم (Healthy WT)", f"{comp['healthy']['dominant_cluster_median']} kcal/mol")
-                kpi_c2.metric("المصاب (Mutant MT)", f"{comp['mutant']['dominant_cluster_median']} kcal/mol")
-                kpi_c3.metric("فارق الدرجة (ΔScore)", f"{comp['delta_score']:+.2f} kcal/mol")
-                kpi_c4.metric("تفسير فارق الدرجة", score_diff_info["category"])
+                kpi_c1.metric("WT (Wild-Type Reference) Median Score", f"{comp['healthy']['dominant_cluster_median']} kcal/mol (kilocalories per mole)")
+                kpi_c2.metric("MT (Mutant Variant) Median Score", f"{comp['mutant']['dominant_cluster_median']} kcal/mol (kilocalories per mole)")
+                kpi_c3.metric(
+                    "ΔScore (Docking Score Difference)",
+                    (
+                        f"{delta_score:+.2f} kcal/mol (kilocalories per mole)"
+                        if delta_score is not None
+                        else "Not evaluated"
+                    ),
+                )
+                kpi_c4.metric(
+                    "Score-Difference Interpretation",
+                    score_diff_info["category"] if score_diff_info else "Not evaluated",
+                )
 
             col_s1, col_s2 = st.columns(2)
             with col_s1:
                 st.write(
-                    f"**بذور السليم الداعمة:** {comp['healthy']['dominant_cluster_seeds']} "
-                    f"({comp['healthy']['seed_count']}) | العنقود التوافقي: #{comp['healthy']['dominant_cluster_id']}"
+                    f"**WT (Wild-Type Reference) Supporting Seeds:** {comp['healthy']['dominant_cluster_seeds']} "
+                    f"({comp['healthy']['seed_count']}) | Consensus Cluster: #{comp['healthy']['dominant_cluster_id']}"
                 )
             with col_s2:
                 st.write(
-                    f"**بذور المصاب الداعمة:** {comp['mutant']['dominant_cluster_seeds']} "
-                    f"({comp['mutant']['seed_count']}) | العنقود التوافقي: #{comp['mutant']['dominant_cluster_id']}"
+                    f"**MT (Mutant Variant) Supporting Seeds:** {comp['mutant']['dominant_cluster_seeds']} "
+                    f"({comp['mutant']['seed_count']}) | Consensus Cluster: #{comp['mutant']['dominant_cluster_id']}"
                 )
 
-            st.caption("ملاحظة: ΔScore = الدرجة الوسيطة للمصاب - الدرجة الوسيطة للسليم (القيم السالبة الأكبر تعني تقارباً أفضل تحت بروتوكول الإرساء هذا).")
+            if delta_score is not None:
+                st.caption(
+                    "Note: ΔScore (Docking Score Difference) = MT (Mutant Variant) Median Score − WT (Wild-Type Reference) Median Score "
+                    "(a more negative value means a lower — more favorable — Vina score under this protocol)."
+                )
+                delta_uncertainty = comp.get("delta_score_uncertainty_kcal")
+                if delta_uncertainty is not None:
+                    st.caption(
+                        f"Estimated ΔScore uncertainty from per-seed best-score variability: "
+                        f"±{delta_uncertainty:.2f} kcal/mol. Differences smaller than "
+                        f"max(±{delta_uncertainty:.2f}, 0.50) kcal/mol are reported as within "
+                        "protocol noise, with no direction claimed."
+                    )
+            else:
+                st.warning(
+                    "ΔScore (Docking Score Difference) was not evaluated: the binding-mode "
+                    "gate requires the WT and MT consensus poses to represent the same site "
+                    "and geometry. The per-arm median scores above are shown for transparency "
+                    "only and are not a matched comparison result."
+                )
 
-            # تفاصيل نتائج المقارنة في تبويبات منظمة
+            # Organized comparison result tabs
             comp_tab_3d, comp_tab_resist = st.tabs([
-                "🔮 المقارنة ثلاثية الأبعاد المتزامنة (WT vs MT 3D)",
-                "🔬 مرشحات التماس الاستكشافية (Exploratory Contacts)"
+                "🔮 Synchronized 3D (Three-Dimensional) Comparison — WT vs. MT",
+                "🔬 Exploratory Contact Candidates"
             ])
 
             with comp_tab_3d:
                 with st.container(border=True):
                     c_col1, c_col2, c_col3 = st.columns(3)
                     with c_col1:
-                        comp_show_ligand = st.checkbox("إظهار الليجاند (Show Ligand)", value=True, key="dock_comp_show_ligand")
+                        comp_show_ligand = st.checkbox("Show Ligand", value=True, key="dock_comp_show_ligand")
                         if comp_show_ligand:
-                            comp_lig_style = st.selectbox("نمط الليجاند:", ["أعواد (Sticks)", "أعواد وكرات (Ball & Stick)", "كرات (Spheres)"], key="dock_comp_lig_style")
+                            comp_lig_style = st.selectbox("Ligand Style:", ["Sticks", "Ball & Stick", "Spheres"], key="dock_comp_lig_style")
                         else:
-                            comp_lig_style = "أعواد (Sticks)"
+                            comp_lig_style = "Sticks"
                     with c_col2:
-                        comp_show_grid = st.checkbox("📦 صندوق البحث (Grid Box)", value=False, key="dock_comp_show_grid")
-                        comp_show_surface = st.checkbox("إظهار السطح (Surface)", value=False, key="dock_comp_show_surface")
+                        comp_show_grid = st.checkbox("📦 Search Grid Box", value=False, key="dock_comp_show_grid")
+                        comp_show_surface = st.checkbox("Show Surface", value=False, key="dock_comp_show_surface")
                     with c_col3:
                         if comp_show_surface:
-                            comp_surf_type = st.selectbox("نوع السطح:", ["MS (Molecular Surface)", "SAS", "VDW"], key="dock_comp_surf_type")
-                            comp_surf_opacity = st.slider("شفافية السطح:", 0.0, 1.0, 0.3, key="dock_comp_surf_opacity")
+                            comp_surf_type = st.selectbox("Surface Type:", ["MS (Molecular Surface)", "SAS (Solvent-Accessible Surface)", "VDW (van der Waals Surface)"], key="dock_comp_surf_type")
+                            comp_surf_opacity = st.slider("Surface Opacity:", 0.0, 1.0, 0.3, key="dock_comp_surf_opacity")
                         else:
                             comp_surf_type = "MS"
                             comp_surf_opacity = 0.3
@@ -1986,12 +2079,12 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                 v_col1, v_col2 = st.columns(2)
                 with v_col1:
                     st.markdown(
-                        f"**🟢 السليم (Healthy): {comp['healthy']['target_id']}** "
-                        f"[العنقود #{comp['healthy']['dominant_cluster_id']} | "
-                        f"البذور: {comp['healthy']['seed_count']} | "
-                        f"الوسيط: {comp['healthy']['dominant_cluster_median']} kcal/mol]"
+                        f"**🟢 WT (Wild-Type Reference): {comp['healthy']['target_id']}** "
+                        f"[Cluster #{comp['healthy']['dominant_cluster_id']} | "
+                        f"Seeds: {comp['healthy']['seed_count']} | "
+                        f"Median: {comp['healthy']['dominant_cluster_median']} kcal/mol (kilocalories per mole)]"
                     )
-                    st.caption("🟣 الأحماض الوردية: أحماض التماس القطبي بالسليم | 🟠 البرتقالية: موقع أحماض الجيب")
+                    st.caption("🟣 Magenta: WT (Wild-Type Reference) Polar-Contact Residues | 🟠 Orange: Binding-Pocket Residues")
                     h_view_html = render_docked_complex_3d(
                         comp['healthy']['clean_pdb'],
                         h_top_pose,
@@ -2006,16 +2099,16 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                         grid_box=comp['healthy'].get('grid'),
                         show_grid_box=comp_show_grid
                     )
-                    components.html(h_view_html, height=480)
+                    st.iframe(h_view_html, height=480)
 
                 with v_col2:
                     st.markdown(
-                        f"**🔴 المصاب (Mutant): {comp['mutant']['target_id']}** "
-                        f"[العنقود #{comp['mutant']['dominant_cluster_id']} | "
-                        f"البذور: {comp['mutant']['seed_count']} | "
-                        f"الوسيط: {comp['mutant']['dominant_cluster_median']} kcal/mol]"
+                        f"**🔴 MT (Mutant Variant): {comp['mutant']['target_id']}** "
+                        f"[Cluster #{comp['mutant']['dominant_cluster_id']} | "
+                        f"Seeds: {comp['mutant']['seed_count']} | "
+                        f"Median: {comp['mutant']['dominant_cluster_median']} kcal/mol (kilocalories per mole)]"
                     )
-                    st.caption("🟣 الأحماض الوردية: أحماض التماس القطبي بالمصاب | 🟠 البرتقالية: موقع أحماض الجيب")
+                    st.caption("🟣 Magenta: MT (Mutant Variant) Polar-Contact Residues | 🟠 Orange: Binding-Pocket Residues")
                     m_view_html = render_docked_complex_3d(
                         comp['mutant']['clean_pdb'],
                         m_top_pose,
@@ -2030,17 +2123,25 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                         grid_box=comp['mutant'].get('grid'),
                         show_grid_box=comp_show_grid
                     )
-                    components.html(m_view_html, height=480)
+                    st.iframe(m_view_html, height=480)
 
             with comp_tab_resist:
-                if score_diff_info["direction"] == "less favorable":
+                if score_diff_info is None:
+                    st.warning("### ΔScore Not Evaluated (Binding-Mode Gate)")
+                    st.write(
+                        "The WT and MT consensus poses do not share the same binding mode, "
+                        "so a docking-score difference would be uninterpretable. No direction "
+                        "or resistance claim is made."
+                    )
+                elif score_diff_info["direction"] == "less favorable":
                     st.warning(f"### {score_diff_info['category']}")
+                    st.write(score_diff_info["summary"])
                 elif score_diff_info["direction"] == "more favorable":
                     st.success(f"### {score_diff_info['category']}")
+                    st.write(score_diff_info["summary"])
                 else:
                     st.info(f"### {score_diff_info['category']}")
-
-                st.write(score_diff_info["summary"])
+                    st.write(score_diff_info["summary"])
                 st.info(CONTACTS_DISCLAIMER)
 
                 with st.container(border=True):
@@ -2051,39 +2152,39 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                     gained_polar = comp_inter.get("gained_polar_contact_residues", comp_inter.get("gained_polar_residues", []))
                     conserved_polar = comp_inter.get("conserved_polar_contact_residues", comp_inter.get("conserved_polar_residues", []))
 
-                    rc_col1.metric("مرشحات تماس السليم القطبي", p_healthy)
-                    rc_col2.metric("مرشحات تماس المصاب القطبي", p_mutant)
-                    rc_col3.metric("مرشحات مفقودة في المصاب", len(lost_polar))
+                    rc_col1.metric("WT (Wild-Type Reference) Polar Contacts", p_healthy)
+                    rc_col2.metric("MT (Mutant Variant) Polar Contacts", p_mutant)
+                    rc_col3.metric("Lost Polar Contacts in MT", len(lost_polar))
 
                     if lost_polar:
-                        st.warning(f"⚠️ **مرشحات التماس القطبي المفقودة في البروتين الطافر:** {', '.join(lost_polar)}")
+                        st.warning(f"⚠️ **Polar contact candidates lost in MT (Mutant Variant):** {', '.join(lost_polar)}")
                     if gained_polar:
-                        st.success(f"✨ **مرشحات التماس القطبي الجديدة في البروتين الطافر:** {', '.join(gained_polar)}")
+                        st.success(f"✨ **Polar contact candidates gained in MT (Mutant Variant):** {', '.join(gained_polar)}")
                     if conserved_polar:
-                        st.info(f"🛡️ **مرشحات التماس القطبي المحفوظة:** {', '.join(conserved_polar)}")
+                        st.info(f"🛡️ **Conserved polar contact candidates:** {', '.join(conserved_polar)}")
 
                     col_tb1, col_tb2 = st.columns(2)
                     with col_tb1:
-                        st.markdown("**🟢 مرشحات تماس السليم القطبي (WT Polar Contacts):**")
+                        st.markdown("**🟢 WT (Wild-Type Reference) Polar Contact Candidates:**")
                         h_polar = h_inter.get("polar_contact_candidates") or h_inter.get("hbonds", [])
                         if h_polar:
                             df_h_hb = pd.DataFrame(h_polar).rename(columns={
-                                "residue": "الحمض", "chain": "السلسلة", "rec_atom": "ذرة المستقبل", "lig_atom": "ذرة الدواء", "distance_angstrom": "المسافة (Å)"
-                            })[["الحمض", "السلسلة", "ذرة المستقبل", "ذرة الدواء", "المسافة (Å)"]]
+                                "residue": "Residue", "chain": "Chain", "rec_atom": "Receptor Atom", "lig_atom": "Ligand Atom", "distance_angstrom": "Distance — Å (Angstroms)"
+                            })[["Residue", "Chain", "Receptor Atom", "Ligand Atom", "Distance — Å (Angstroms)"]]
                             st.dataframe(df_h_hb, use_container_width=True, hide_index=True)
                         else:
-                            st.caption("لا توجد مرشحات تماس قطبي بمسافة <= 3.5 Å.")
+                            st.caption("No polar contact candidates within <= 3.5 Å (Angstroms).")
 
                     with col_tb2:
-                        st.markdown("**🔴 مرشحات تماس المصاب القطبي (Mutant Polar Contacts):**")
+                        st.markdown("**🔴 MT (Mutant Variant) Polar Contact Candidates:**")
                         m_polar = m_inter.get("polar_contact_candidates") or m_inter.get("hbonds", [])
                         if m_polar:
                             df_m_hb = pd.DataFrame(m_polar).rename(columns={
-                                "residue": "الحمض", "chain": "السلسلة", "rec_atom": "ذرة المستقبل", "lig_atom": "ذرة الدواء", "distance_angstrom": "المسافة (Å)"
-                            })[["الحمض", "السلسلة", "ذرة المستقبل", "ذرة الدواء", "المسافة (Å)"]]
+                                "residue": "Residue", "chain": "Chain", "rec_atom": "Receptor Atom", "lig_atom": "Ligand Atom", "distance_angstrom": "Distance — Å (Angstroms)"
+                            })[["Residue", "Chain", "Receptor Atom", "Ligand Atom", "Distance — Å (Angstroms)"]]
                             st.dataframe(df_m_hb, use_container_width=True, hide_index=True)
                         else:
-                            st.caption("لا توجد مرشحات تماس قطبي بمسافة <= 3.5 Å.")
+                            st.caption("No polar contact candidates within <= 3.5 Å (Angstroms).")
 
         # Render Exploratory Cross Results
         cross_res = st.session_state.get("exploratory_cross_result")
@@ -2091,31 +2192,34 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
             st.markdown("---")
             st.subheader(f"📊 {cross_res['comparison_label']}")
             st.info(f"ℹ️ {cross_res.get('protonation_note', PROTONATION_ASSUMPTION_NOTE)}")
-            st.warning("⚠️ تنبيه علمي صارم: لا يتم حساب فارق درجات (ΔScore) أو ترتيب تفضيلي بين بروتينات أو جيوب غير متطابقة.")
+            st.warning(
+                "⚠️ Strict Scientific Notice: ΔScore (Docking Score Difference) and comparative ranking "
+                "are not computed across non-homologous proteins or unmatched pockets."
+            )
 
             col_xp_res1, col_xp_res2 = st.columns(2)
             with col_xp_res1:
                 r1_data = cross_res["receptor1"]
                 with st.container(border=True):
-                    st.markdown(f"### 🏛️ المستقبل 1: {r1_data['target_id']}")
+                    st.markdown(f"### 🏛️ Receptor 1: {r1_data['target_id']}")
                     if r1_data.get("cluster_reproducible"):
                         st.success("✅ Reproducible exploratory cluster (>= 2 independent seeds)")
-                        st.metric("الدرجة الوسيطة (Median Score)", f"{r1_data['dominant_cluster_median']} kcal/mol")
+                        st.metric("Median Score", f"{r1_data['dominant_cluster_median']} kcal/mol (kilocalories per mole)")
                     else:
                         st.warning("⚠️ Exploratory pose without independent-seed support")
                         r1_dom_p = r1_data.get("dominant_cluster_pose")
                         r1_disp_score = r1_dom_p.score if r1_dom_p else r1_data.get("dominant_cluster_median")
-                        st.metric("درجة الوضعية (Exploratory Pose Score)", f"{r1_disp_score} kcal/mol")
+                        st.metric("Exploratory Pose Score", f"{r1_disp_score} kcal/mol (kilocalories per mole)")
 
                     r1_dom_pose = r1_data.get("dominant_cluster_pose")
                     if r1_dom_pose:
                         st.caption(
-                            f"**العنقود:** #{r1_data['dominant_cluster_id']} | "
-                            f"**الوضعية:** Rank {r1_dom_pose.rank} (Seed {r1_dom_pose.seed}, Score {r1_dom_pose.score} kcal/mol) | "
-                            f"**البذور الداعمة:** {r1_data['dominant_cluster_seeds']}"
+                            f"**Cluster:** #{r1_data['dominant_cluster_id']} | "
+                            f"**Pose:** Rank {r1_dom_pose.rank} (Seed {r1_dom_pose.seed}, Score {r1_dom_pose.score} kcal/mol) | "
+                            f"**Supporting Seeds:** {r1_data['dominant_cluster_seeds']}"
                         )
                     else:
-                        st.caption(f"**العنقود:** #{r1_data['dominant_cluster_id']} | **البذور الداعمة:** {r1_data['dominant_cluster_seeds']}")
+                        st.caption(f"**Cluster:** #{r1_data['dominant_cluster_id']} | **Supporting Seeds:** {r1_data['dominant_cluster_seeds']}")
 
                     r1_pose = r1_dom_pose.pdbqt_block if r1_dom_pose else ""
                     r1_html = render_docked_complex_3d(
@@ -2125,30 +2229,30 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                         pocket_residues=r1_data["pocket_residues"],
                         grid_box=r1_data.get("grid"),
                     )
-                    components.html(r1_html, height=400)
+                    st.iframe(r1_html, height=400)
 
             with col_xp_res2:
                 r2_data = cross_res["receptor2"]
                 with st.container(border=True):
-                    st.markdown(f"### 🏛️ المستقبل 2: {r2_data['target_id']}")
+                    st.markdown(f"### 🏛️ Receptor 2: {r2_data['target_id']}")
                     if r2_data.get("cluster_reproducible"):
                         st.success("✅ Reproducible exploratory cluster (>= 2 independent seeds)")
-                        st.metric("الدرجة الوسيطة (Median Score)", f"{r2_data['dominant_cluster_median']} kcal/mol")
+                        st.metric("Median Score", f"{r2_data['dominant_cluster_median']} kcal/mol (kilocalories per mole)")
                     else:
                         st.warning("⚠️ Exploratory pose without independent-seed support")
                         r2_dom_p = r2_data.get("dominant_cluster_pose")
                         r2_disp_score = r2_dom_p.score if r2_dom_p else r2_data.get("dominant_cluster_median")
-                        st.metric("درجة الوضعية (Exploratory Pose Score)", f"{r2_disp_score} kcal/mol")
+                        st.metric("Exploratory Pose Score", f"{r2_disp_score} kcal/mol (kilocalories per mole)")
 
                     r2_dom_pose = r2_data.get("dominant_cluster_pose")
                     if r2_dom_pose:
                         st.caption(
-                            f"**العنقود:** #{r2_data['dominant_cluster_id']} | "
-                            f"**الوضعية:** Rank {r2_dom_pose.rank} (Seed {r2_dom_pose.seed}, Score {r2_dom_pose.score} kcal/mol) | "
-                            f"**البذور الداعمة:** {r2_data['dominant_cluster_seeds']}"
+                            f"**Cluster:** #{r2_data['dominant_cluster_id']} | "
+                            f"**Pose:** Rank {r2_dom_pose.rank} (Seed {r2_dom_pose.seed}, Score {r2_dom_pose.score} kcal/mol) | "
+                            f"**Supporting Seeds:** {r2_data['dominant_cluster_seeds']}"
                         )
                     else:
-                        st.caption(f"**العنقود:** #{r2_data['dominant_cluster_id']} | **البذور الداعمة:** {r2_data['dominant_cluster_seeds']}")
+                        st.caption(f"**Cluster:** #{r2_data['dominant_cluster_id']} | **Supporting Seeds:** {r2_data['dominant_cluster_seeds']}")
 
                     r2_pose = r2_dom_pose.pdbqt_block if r2_dom_pose else ""
                     r2_html = render_docked_complex_3d(
@@ -2158,33 +2262,33 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                         pocket_residues=r2_data["pocket_residues"],
                         grid_box=r2_data.get("grid"),
                     )
-                    components.html(r2_html, height=400)
+                    st.iframe(r2_html, height=400)
 
-    # 3. تبويب الفرز الافتراضي متعدد الأدوية
+    # 3. Multi-Drug Panel Virtual Screening Tab
     with tab_panel_screen:
         with st.container(border=True):
-            st.markdown("#### 💊 الفرز الافتراضي والمقارنة متعددة الأدوية (Multi-Drug Virtual Screening)")
-            st.markdown("مقارنة عدة أدوية ضد الطفرة في جولة فحص حسابية استكشافية واحدة لحساب فوارق درجات الإرساء:")
+            st.markdown("#### 💊 Multi-Drug Virtual Screening & Comparison")
+            st.markdown("Compare multiple compounds against the mutation in a single exploratory screening batch to compute docking score differences:")
             screening_panels = {
-                "EGFR TKI Panel (أدوية سرطان الرئة)": [
-                    ("Erlotinib (جيل 1)", "COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC"),
-                    ("Gefitinib (جيل 1)", "COC1=C(C=C2C(=C1)N=CN=C2NC3=CC(=C(C=C3)F)Cl)OCCCN4CCOCC4"),
-                    ("Osimertinib (جيل 3)", "CN1CCN(CC1)C2=CC(=C(C=C2)NC3=NC=CC(=N3)C4=CN(C5=CC=CC=C54)C)NC(=O)C=C")
+                "EGFR (Epidermal Growth Factor Receptor) TKI (Tyrosine Kinase Inhibitor) Panel — NSCLC (Non-Small Cell Lung Cancer)": [
+                    ("Erlotinib (1st Gen)", "COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC"),
+                    ("Gefitinib (1st Gen)", "COC1=C(C=C2C(=C1)N=CN=C2NC3=CC(=C(C=C3)F)Cl)OCCCN4CCOCC4"),
+                    ("Osimertinib (3rd Gen)", "CN1CCN(CC1)C2=CC(=C(C=C2)NC3=NC=CC(=N3)C4=CN(C5=CC=CC=C54)C)NC(=O)C=C")
                 ],
-                "BCR-ABL Inhibitors (أدوية سرطان الدم CML)": [
-                    ("Imatinib (جيل 1)", "CC1=C(C=C(C=C1)NC(=O)C2=CC=C(C=C2)CN3CCN(CC3)C)NC4=NC=CC(=N4)C5=CN=CC=C5"),
-                    ("Dasatinib (جيل 2)", "CC1=C(C(=CC=C1)Cl)NC(=O)C2=CN=C(S2)NC3=CC(=NC(=N3)C)N4CCN(CC4)CCO")
+                "BCR-ABL Inhibitors — CML (Chronic Myeloid Leukemia)": [
+                    ("Imatinib (1st Gen)", "CC1=C(C=C(C=C1)NC(=O)C2=CC=C(C=C2)CN3CCN(CC3)C)NC4=NC=CC(=N4)C5=CN=CC=C5"),
+                    ("Dasatinib (2nd Gen)", "CC1=C(C(=CC=C1)Cl)NC(=O)C2=CN=C(S2)NC3=CC(=NC(=N3)C)N4CCN(CC4)CCO")
                 ],
-                "Clinical Antivirals (مضادات الفيروسات)": [
+                "Clinical Antivirals": [
                     ("Nirmatrelvir (Paxlovid)", "CC(C)(C)C(C(=O)NC(C1CC1)C#N)NC(=O)C2CC3(C2)C(C(O3)(F)F)C(=O)O"),
                     ("Remdesivir", "CCC(CC)COC(=O)C(C)NP(=O)(OCC1C(C(C(O1)(C#N)C2=CC=C3N2N=CN=C3N)O)O)OC4=CC=CC=C4")
                 ]
             }
-            chosen_panel_name = st.selectbox("اختر باقة الفرز الصيدلانية:", list(screening_panels.keys()), key="screen_panel_select")
+            chosen_panel_name = st.selectbox("Select Screening Drug Panel:", list(screening_panels.keys()), key="screen_panel_select")
             chosen_drugs = screening_panels[chosen_panel_name]
 
             if workflow_mode != "matched_variant":
-                st.info("💡 الفرز الافتراضي المقارن للباقات في هذا التبويب مخصص لمقارنة البروتين السليم مع الطافر المتطابق (Matched Pair). للإرساء الاستكشاري، يرجى فحص الأدوية فردياً في التبويب الأول.")
+                st.info("💡 Panel virtual screening in this tab is designed for matched WT (Wild-Type Reference) vs. MT (Mutant Variant) pairs. For exploratory cross-protein docking, screen drugs individually in the first tab.")
             else:
                 screen_fp_payload = {
                     "workflow": "screening_panel",
@@ -2207,15 +2311,15 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                     st.session_state.pop("screening_results", None)
                 st.session_state["dock_screen_input_fingerprint"] = current_screen_fp
 
-                if st.button("🚀 تشغيل الفرز الافتراضي للباقة (Screen Drug Panel)", key="btn_run_panel_screen", type="primary"):
+                if st.button("🚀 Run Panel Virtual Screening", key="btn_run_panel_screen", type="primary"):
                     st.session_state.pop("screening_results", None)
                     screen_pocket_list = [r.strip() for r in pocket_res.split(",") if r.strip()]
                     if not screen_pocket_list:
-                        st.error("يرجى تحديد أحماض جيب الارتباط أولاً في البطاقة العلوية.")
+                        st.error("Please define binding-pocket residues in the upper panel first.")
                     elif not pair_val.get("is_valid"):
                         st.error(pair_val.get("error") or "Selected chains are not a validated WT/variant pair.")
                     elif not final_m_res_list:
-                        st.error("جيب البروتين المصاب غير محدد أو لم يتم تعيين أي حمض مقابل.")
+                        st.error("MT (Mutant Variant) binding pocket is undefined or no homologous residues were mapped.")
                     else:
                         progress_bar = st.progress(0.0)
                         screen_results = []
@@ -2266,30 +2370,45 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                                 )
                                 wt_s = cr['healthy']['dominant_cluster_median']
                                 mt_s = cr['mutant']['dominant_cluster_median']
-                                delta_s = cr['delta_score']
-                                if delta_s >= 1.5:
-                                    r_tag = "Score increase >= +1.5 kcal/mol"
-                                elif delta_s >= 0.6:
-                                    r_tag = "Score increase +0.6 to +1.5 kcal/mol"
-                                elif delta_s <= -1.5:
-                                    r_tag = "Score decrease <= -1.5 kcal/mol"
+                                delta_s = cr.get('delta_score')
+                                noise = cr.get('delta_score_uncertainty_kcal')
+                                neutral_band = (
+                                    max(float(noise), 0.5)
+                                    if noise is not None
+                                    else SCORE_DIFF_NEUTRAL_BAND_KCAL
+                                )
+                                moderate_band = max(SCORE_DIFF_MODERATE_BAND_KCAL, neutral_band)
+                                if delta_s is None:
+                                    r_tag = "Not evaluated (binding-mode gate)"
+                                elif delta_s >= moderate_band:
+                                    r_tag = f"Score increase >= +{moderate_band:.2f} kcal/mol (kilocalories per mole)"
+                                elif delta_s >= neutral_band:
+                                    r_tag = (
+                                        f"Score increase +{neutral_band:.2f} to +{moderate_band:.2f} "
+                                        "kcal/mol (kilocalories per mole)"
+                                    )
+                                elif delta_s <= -moderate_band:
+                                    r_tag = f"Score decrease <= -{moderate_band:.2f} kcal/mol (kilocalories per mole)"
                                 else:
-                                    r_tag = "Neutral (|ΔScore| < 0.6 kcal/mol)"
+                                    r_tag = (
+                                        f"Within protocol noise — |ΔScore (Docking Score Difference)| "
+                                        f"< {neutral_band:.2f} kcal/mol (kilocalories per mole)"
+                                    )
 
                                 screen_results.append({
-                                    "الدواء": d_name,
-                                    "السليم (WT) kcal/mol": wt_s,
-                                    "المصاب (Mutant) kcal/mol": mt_s,
-                                    "فارق الطاقة (ΔScore)": delta_s,
-                                    "Exploratory score-difference flag": r_tag
+                                    "Drug": d_name,
+                                    "WT (Wild-Type Reference) kcal/mol (kilocalories per mole)": wt_s,
+                                    "MT (Mutant Variant) kcal/mol (kilocalories per mole)": mt_s,
+                                    "ΔScore (Docking Score Difference)": delta_s,
+                                    "Exploratory Score-Difference Flag": r_tag
                                 })
                             except Exception as ex:
-                                st.warning(f"تعذر فرز {d_name}: {ex}")
+                                st.warning(f"Could not screen {d_name}: {ex}")
                             progress_bar.progress((idx + 1) / len(chosen_drugs))
 
                         if screen_results:
                             st.session_state["screening_results"] = screen_results
-                            st.success("✅ اكتمل الفرز الافتراضي بنجاح!")
+                            st.success("✅ Virtual panel screening completed successfully!")
 
                 saved_screen_res = st.session_state.get("screening_results")
                 if saved_screen_res:
@@ -2297,20 +2416,22 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                     st.dataframe(df_screen, use_container_width=True, hide_index=True)
 
                     fig_screen = go.Figure()
-                    d_names = [r["الدواء"] for r in saved_screen_res]
-                    wt_vals = [r["السليم (WT) kcal/mol"] for r in saved_screen_res]
-                    mt_vals = [r["المصاب (Mutant) kcal/mol"] for r in saved_screen_res]
+                    d_names = [r["Drug"] for r in saved_screen_res]
+                    wt_vals = [r["WT (Wild-Type Reference) kcal/mol (kilocalories per mole)"] for r in saved_screen_res]
+                    mt_vals = [r["MT (Mutant Variant) kcal/mol (kilocalories per mole)"] for r in saved_screen_res]
 
                     fig_screen.add_trace(go.Bar(
-                        x=d_names, y=wt_vals, name="السليم (WT)",
+                        x=d_names, y=wt_vals, name="WT (Wild-Type Reference)",
                         marker_color="#2ea043"
                     ))
                     fig_screen.add_trace(go.Bar(
-                        x=d_names, y=mt_vals, name="المصاب (Mutant)",
+                        x=d_names, y=mt_vals, name="MT (Mutant Variant)",
                         marker_color="#da3633"
                     ))
                     fig_screen.update_layout(
-                        title="مقارنة طاقة الارتباط الحاسوبية عبر باقة الأدوية (kcal/mol - الأقل أفضل)",
+                        title="Computational Docking Score Comparison Across Drug Panel — kcal/mol (kilocalories per mole; Lower Is Better)",
+                        xaxis_title="Drug Compound",
+                        yaxis_title="Docking Score — kcal/mol (kilocalories per mole)",
                         barmode="group",
                         template="plotly_dark",
                         height=380,
