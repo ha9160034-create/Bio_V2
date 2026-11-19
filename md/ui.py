@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List
 
 import streamlit as st
+import streamlit.components.v1 as components
 import py3Dmol
 
 from md.engine import detect_gromacs, get_gmx_version, check_backend_tools, generate_standalone_scripts
@@ -88,17 +89,51 @@ DISCLAIMER_MD = (
 )
 
 
-def render_mol_3d(pdb_text: str, height: int = 400, ligand_resname: str = "LIG"):
+def render_mol_3d(
+    pdb_text: str,
+    height: int = 400,
+    ligand_resname: str = "LIG",
+    show_surface: bool = True,
+    surface_opacity: float = 0.5,
+    surface_type: str = "MS",
+    surface_color: str = "#ECEFF1",
+):
     """Render a 3D interactive molecular visualization using py3Dmol."""
     viewer = py3Dmol.view(width="100%", height=height)
     viewer.addModel(pdb_text, "pdb")
     viewer.setStyle({"hetflag": False}, {"cartoon": {"color": "spectrum", "opacity": 0.85}})
+
+    surf_code = surface_type.split()[0] if surface_type else "MS"
+    surf_kind = (
+        py3Dmol.MS
+        if (surface_type == "MS" or surf_code == "MS")
+        else (py3Dmol.VDW if (surface_type == "VDW" or surf_code == "VDW") else py3Dmol.SAS)
+    )
+    if show_surface:
+        viewer.addSurface(
+            surf_kind,
+            {"opacity": surface_opacity, "color": surface_color},
+            {"hetflag": False},
+        )
+
+    ligand_style = {
+        "stick": {"colorscheme": "greenCarbon", "radius": 0.28},
+        "sphere": {"colorscheme": "greenCarbon", "radius": 0.5},
+    }
+    viewer.setStyle({"hetflag": True}, ligand_style)
     viewer.setStyle(
         {"resn": [ligand_resname, "JZ4", "UNL"]},
-        {"stick": {"colorscheme": "greenCarbon", "radius": 0.25}},
+        ligand_style,
     )
     viewer.zoomTo()
-    st.iframe(viewer._make_html(), height=height + 20)
+
+    style_tag = (
+        "<style>html, body { margin: 0 !important; padding: 0 !important; "
+        "overflow: hidden !important; width: 100% !important; height: 100% !important; } "
+        "div[id^='3dmolviewer'] { overflow: hidden !important; width: 100% !important; height: 100% !important; }</style>"
+    )
+    viewer.startjs = style_tag + viewer.startjs
+    components.html(viewer._make_html(), height=height, scrolling=False)
 
 
 def scan_available_docking_runs() -> List[Dict[str, Any]]:
@@ -829,7 +864,37 @@ def render_md_tab():
         st.markdown("**Final Production Frame — PBC (Periodic Boundary Conditions)-wrapped & fitted:**")
         last_frame = load_last_frame_pdb(run_dir / "trajectory_pbc_fit.pdb")
         if last_frame:
-            render_mol_3d(last_frame, height=450, ligand_resname=md_res.get("ligand_resname", "LIG"))
+            c_surf1, c_surf2, c_surf3 = st.columns([1, 1, 1])
+            with c_surf1:
+                show_surface = st.checkbox("Show Receptor Surface", value=True, key="md_show_surface")
+            if show_surface:
+                with c_surf2:
+                    surface_type = st.selectbox(
+                        "Surface Model",
+                        ["MS (Molecular Surface)", "SAS (Solvent-Accessible Surface)", "VDW (Van der Waals Surface)"],
+                        key="md_surface_type",
+                    )
+                with c_surf3:
+                    surface_opacity = st.slider(
+                        "Surface Opacity",
+                        min_value=0.1,
+                        max_value=1.0,
+                        value=0.5,
+                        step=0.05,
+                        key="md_surface_opacity",
+                    )
+            else:
+                surface_type = "MS"
+                surface_opacity = 0.5
+
+            render_mol_3d(
+                last_frame,
+                height=450,
+                ligand_resname=md_res.get("ligand_resname", "LIG"),
+                show_surface=show_surface,
+                surface_opacity=surface_opacity,
+                surface_type=surface_type.split()[0] if isinstance(surface_type, str) else "MS",
+            )
         else:
             st.info("Trajectory PDB (Protein Data Bank) file not found.")
 
