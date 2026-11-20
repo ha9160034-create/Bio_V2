@@ -62,7 +62,7 @@ def clear_protein(prefix: str, label: str) -> None:
         f"{prefix}_results",
     }:
         st.session_state.pop(key, None)
-    invalidate_dependent_results(f"{label} protein was cleared by the user.")
+    invalidate_dependent_results(f"{label} protein cleared.")
 
 def reset_protein_state(prefix: str, preserve_keys: list = None):
     """Clear legacy session state variables for a specific protein to start a clean analysis and prevent data conflicts."""
@@ -78,15 +78,15 @@ def reset_protein_state(prefix: str, preserve_keys: list = None):
             st.session_state.pop(k, None)
 
 def protein_ui_panel(p):
-    """Render the UI panel for uploading protein files or entering PDB (Protein Data Bank) IDs and viewing options."""
+    """Render the UI panel for uploading protein files or entering PDB IDs and viewing options."""
     with p["col"]:
         icon = '🟢' if p['prefix'] == 'h' else '🔴'
         st.header(f"{icon} {p['label']}")
-        source = st.radio("Source:", ["PDB (Protein Data Bank) ID", "Upload File"], key=f"{p['prefix']}_src", horizontal=True)
+        source = st.radio("Source:", ["PDB ID", "Upload File"], key=f"{p['prefix']}_src", horizontal=True)
 
-        if source == "PDB (Protein Data Bank) ID":
+        if source == "PDB ID":
             pdb_input = st.text_input(
-                "PDB (Protein Data Bank) ID",
+                "PDB ID",
                 value=st.session_state[f"{p['prefix']}_id_in_val"],
                 key=f"{p['prefix']}_id_widget"
             ).strip().upper()
@@ -110,7 +110,7 @@ def protein_ui_panel(p):
                                     st.session_state["h_id"] = h_id
                                     st.session_state.pop("h_upload_sha256", None)
                                     reset_protein_state('h')
-                                    st.info(f"✅ Wild-Type (WT — Healthy Reference) automatically loaded: {h_id}")
+                                    st.info(f"✅ Wild-Type automatically loaded: {h_id}")
                         deposited_data = fetch_deposited_pdb(pdb_input)
                         assembly_data = fetch_biological_assembly(pdb_input, assembly_id=1)
                         if deposited_data:
@@ -119,10 +119,10 @@ def protein_ui_panel(p):
                             st.session_state[f"{p['prefix']}_id"] = pdb_input
                             st.session_state.pop(f"{p['prefix']}_upload_sha256", None)
                             reset_protein_state(p['prefix'])
-                            invalidate_dependent_results(f"{p['label']} coordinates were replaced with PDB (Protein Data Bank) ID {pdb_input}.")
+                            invalidate_dependent_results(f"{p['label']} replaced with PDB {pdb_input}.")
                             st.rerun()
                         else:
-                            st.error(f"Protein structure not found for PDB (Protein Data Bank) ID: {pdb_input}")
+                            st.error(f"Structure not found for PDB ID: {pdb_input}")
             with col_btn2:
                 if st.button(f"Clear {p['label']}", key=f"btn_clear_{p['prefix']}", use_container_width=True):
                     clear_protein(p['prefix'], p['label'])
@@ -139,7 +139,7 @@ def protein_ui_panel(p):
                     st.session_state[f"{p['prefix']}_assembly_pdb"] = None
                     st.session_state[f"{p['prefix']}_id"] = file.name
                     reset_protein_state(p['prefix'])
-                    invalidate_dependent_results(f"Uploaded file for {p['label']} was changed to '{file.name}'.")
+                    invalidate_dependent_results(f"Uploaded file for {p['label']} changed to '{file.name}'.")
                     st.rerun()
 
             if st.button(f"Clear {p['label']}", key=f"btn_clear_up_{p['prefix']}", use_container_width=True):
@@ -150,12 +150,12 @@ def render_analysis_tab():
     """Render the complete Structural Analysis & Mutation Comparison tab."""
     reason = st.session_state.pop("last_result_invalidation_reason", None)
     if reason:
-        st.info(f"Previous results were cleared to prevent dataset mixing. {reason}")
+        st.info(f"Previous results cleared: {reason}")
 
     # ── Sidebar Settings ──
     st.sidebar.header("⚙️ Analysis & Settings")
     with st.sidebar.expander("🎨 Display Options", expanded=True):
-        search_radius = st.slider("🔍 Contact Search Radius, Å (Angstroms)", 3.0, 12.0, 5.0)
+        search_radius = st.slider("🔍 Contact Search Radius (Å)", 3.0, 12.0, 5.0)
         view_style = st.selectbox("Representation Style", ["cartoon", "stick", "sphere"])
         show_ligands = st.checkbox("Show Ligands", value=True)
         if show_ligands:
@@ -178,13 +178,13 @@ def render_analysis_tab():
         assembly_mode_display = st.radio(
             "Coordinate Mode:",
             [
-                "Functional Biological Assembly 1 — RCSB PDB (Research Collaboratory for Structural Bioinformatics Protein Data Bank)",
-                "Deposited Asymmetric Unit (Crystal Unit)"
+                "Biological Assembly 1 (RCSB PDB)",
+                "Deposited Asymmetric Unit"
             ],
             index=0,
             help=(
-                "Functional Biological Assembly 1: The official oligomeric assembly annotated by RCSB PDB (Research Collaboratory for Structural Bioinformatics Protein Data Bank) — recommended for structural comparison.\n"
-                "Deposited Asymmetric Unit: The original crystallographic coordinate file (may contain multiple symmetry or crystal-packing copies)."
+                "Biological Assembly 1: Annotated oligomeric assembly (recommended for comparison).\n"
+                "Deposited Asymmetric Unit: Original crystallographic coordinate file."
             )
         )
         use_biological_assembly = "Biological Assembly" in assembly_mode_display
@@ -206,8 +206,8 @@ def render_analysis_tab():
     # ── Step 1: Protein Input Panels ──
     col1, col2 = st.columns(2)
     proteins = [
-        {"label": "Mutant (MT — Variant Structure)", "prefix": "m", "col": col2, "bg": "#1E0D0D"},
-        {"label": "Wild-Type (WT — Healthy Reference)", "prefix": "h", "col": col1, "bg": "#0D1B1E"}
+        {"label": "Mutant (MT)", "prefix": "m", "col": col2, "bg": "#1E0D0D"},
+        {"label": "Wild-Type (WT)", "prefix": "h", "col": col1, "bg": "#0D1B1E"}
     ]
 
     for p in proteins:
@@ -236,7 +236,7 @@ def render_analysis_tab():
                 active_pdb = deposited_pdb
                 active_source = "Deposited Asymmetric Unit (Biological Assembly Unavailable)"
                 st.warning(
-                    f"{p['label']}: An official RCSB PDB (Research Collaboratory for Structural Bioinformatics Protein Data Bank) Biological Assembly file is unavailable for this entry. Using the complete deposited coordinates without removing any chains."
+                    f"{p['label']}: Biological assembly unavailable for this entry; using deposited coordinates."
                 )
             else:
                 active_pdb = deposited_pdb
@@ -352,9 +352,9 @@ def render_analysis_tab():
 
             fasta = sequence_to_fasta(struct, selected_chain, st.session_state.get(f"{prefix}_id", p['label']))
             if fasta:
-                with st.expander(f"🧬 Download FASTA (Fast-All Sequence Format) - {p['label']}"):
+                with st.expander(f"🧬 Download FASTA - {p['label']}"):
                     st.download_button(
-                        "⬇️ Download FASTA (Fast-All Sequence Format)", fasta,
+                        "⬇️ Download FASTA", fasta,
                         f"{st.session_state.get(f'{prefix}_id', 'protein')}_{selected_chain}.fasta",
                         "text/plain", key=f"dl_f_{prefix}"
                     )
@@ -375,31 +375,31 @@ def render_analysis_tab():
                         'res_name': 'Residue',
                         'one_letter': '1-Letter Code',
                         'class': 'Chemical Class',
-                        'min_dist': 'Nearest Contact Distance, Å (Angstroms)',
-                        'sasa': 'SASA (Solvent-Accessible Surface Area), Å² (square Angstroms)'
+                        'min_dist': 'Nearest Contact Distance (Å)',
+                        'sasa': 'SASA (Å²)'
                     })
                     st.dataframe(df_display, use_container_width=True, hide_index=True)
 
     # ── Step 5: Direct Comparison Between Wild-Type and Mutant ──
     if structures.get('h') and structures.get('m') and h_chain and m_chain:
         st.divider()
-        st.header("📋 Chain Comparison — WT (Wild-Type Reference) vs. MT (Mutant Variant)")
+        st.header("📋 Chain Comparison — WT vs. MT")
         
         if alignment_data:
             id_pct = alignment_data.get('identity_pct', 100.0)
             proceed_with_comparison = True
             if id_pct < 40.0:
                 st.warning(
-                    f"⚠️ **Warning: Very low sequence identity ({id_pct:.1f}% < 40%).** "
-                    "Comparing non-homologous chains does not represent a valid WT (Wild-Type Reference) vs. MT (Mutant Variant) comparison for a specific mutation."
+                    f"⚠️ Low sequence identity ({id_pct:.1f}% < 40%). "
+                    "Comparing non-homologous chains may produce invalid WT vs. MT comparison."
                 )
                 proceed_with_comparison = st.checkbox(
-                    "I confirm I want to proceed with the comparison and display the mutation table and SASA (Solvent-Accessible Surface Area) impact despite low sequence identity (< 40%)",
+                    "I confirm I want to proceed with comparison despite low sequence identity (< 40%)",
                     key="confirm_low_id_comparison"
                 )
 
             if not proceed_with_comparison:
-                st.info("Comparison is hidden until you confirm or select homologous chains.")
+                st.info("Comparison is hidden until confirmed or homologous chains are selected.")
             else:
                 healthy_sasa_map = calculate_sasa_map(structures['h'], h_chain)
                 mutant_sasa_map = calculate_sasa_map(structures['m'], m_chain)
@@ -442,31 +442,31 @@ def render_analysis_tab():
                 
                 comparison_df = pd.DataFrame(rows)
                 
-                with st.expander("Advanced Comparison Table (Structural & Chemical Impact)"):
+                with st.expander("Advanced Comparison Table (Structural & Impact)"):
                     display_df = comparison_df.rename(columns={
-                        'res_num_h': 'WT (Wild-Type Reference) Residue #',
-                        'res_num_m': 'MT (Mutant Variant) Residue #',
-                        'WT_Res': 'WT (Wild-Type Reference) Residue',
-                        'MT_Res': 'MT (Mutant Variant) Residue',
-                        'SASA_H': 'WT (Wild-Type Reference) SASA (Solvent-Accessible Surface Area), Å² (square Angstroms)',
-                        'SASA_M': 'MT (Mutant Variant) SASA (Solvent-Accessible Surface Area), Å² (square Angstroms)',
-                        'SASA_Delta': 'ΔSASA (Change in Solvent-Accessible Surface Area), Å² (square Angstroms)',
+                        'res_num_h': 'WT Residue #',
+                        'res_num_m': 'MT Residue #',
+                        'WT_Res': 'WT Residue',
+                        'MT_Res': 'MT Residue',
+                        'SASA_H': 'WT SASA (Å²)',
+                        'SASA_M': 'MT SASA (Å²)',
+                        'SASA_Delta': 'ΔSASA (Å²)',
                         'Status': 'Status',
                         'Impact': 'Biochemical & Structural Impact'
                     })[[
-                        'WT (Wild-Type Reference) Residue #',
-                        'MT (Mutant Variant) Residue #',
-                        'WT (Wild-Type Reference) Residue',
-                        'MT (Mutant Variant) Residue',
-                        'WT (Wild-Type Reference) SASA (Solvent-Accessible Surface Area), Å² (square Angstroms)',
-                        'MT (Mutant Variant) SASA (Solvent-Accessible Surface Area), Å² (square Angstroms)',
-                        'ΔSASA (Change in Solvent-Accessible Surface Area), Å² (square Angstroms)',
+                        'WT Residue #',
+                        'MT Residue #',
+                        'WT Residue',
+                        'MT Residue',
+                        'WT SASA (Å²)',
+                        'MT SASA (Å²)',
+                        'ΔSASA (Å²)',
                         'Status',
                         'Biochemical & Structural Impact'
                     ]]
                     st.dataframe(
                         display_df.style.apply(
-                            lambda r: ['background-color: #3e2723' if r['WT (Wild-Type Reference) Residue'] != r['MT (Mutant Variant) Residue'] else ''] * len(r),
+                            lambda r: ['background-color: #3e2723' if r['WT Residue'] != r['MT Residue'] else ''] * len(r),
                             axis=1
                         ),
                         use_container_width=True,
@@ -474,7 +474,7 @@ def render_analysis_tab():
                     )
 
                 # ── Advanced SASA Comparison Chart ──
-                st.subheader("📊 Advanced SASA (Solvent-Accessible Surface Area) Comparison")
+                st.subheader("📊 SASA Comparison")
                 comparison_df['plot_index'] = range(1, len(comparison_df) + 1)
                 sasa_figure = build_sasa_figure(comparison_df)
                 st.plotly_chart(sasa_figure, use_container_width=True)
@@ -499,7 +499,7 @@ def render_analysis_tab():
                 score_c3.metric("Mutations", f"{mutations_count}")
                 score_c4.metric("Gaps & Indels", f"{indels_count}")
                 score_c5.metric(
-                    "Structural Deviation — Cα (Alpha-Carbon Backbone Atom) RMSD (Root-Mean-Square Deviation), Å (Angstroms)",
+                    "Backbone Cα RMSD",
                     f"{ca_rmsd:.3f} Å"
                 )
             else:
