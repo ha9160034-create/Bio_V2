@@ -250,7 +250,7 @@ def render_docking_tab():
             f"{reason} Saved run folders remain available as separate provenance records."
         )
 
-    st.header("🔬 Molecular Docking Simulation — Vina (AutoDock Vina Molecular Docking Engine)")
+    st.header("🔬 Molecular Docking Simulation — Vina")
     vina_ver = get_vina_version()
     st.caption(f"⚙️ Engine: {vina_ver} | Ligand Preparation: RDKit & OpenBabel")
     st.caption(
@@ -259,7 +259,7 @@ def render_docking_tab():
 
     vina_exec = get_vina_path()
     if not vina_exec.exists():
-        st.error(f"❌ Vina (AutoDock Vina Molecular Docking Engine) executable not found at: {vina_exec}")
+        st.error(f"❌ Vina executable not found at: {vina_exec}")
         return
 
     try:
@@ -470,7 +470,7 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
             }
             if "dock_pocket_padding" not in st.session_state:
                 padding_kwargs["value"] = 8.0
-            slider_label = "Box Padding — Å (Angstroms):" if site_mode == "blind_docking" else "Pocket Padding — Å (Angstroms):"
+            slider_label = "Box Padding — Å:" if site_mode == "blind_docking" else "Pocket Padding — Å:"
             pocket_padding = st.slider(slider_label, **padding_kwargs)
 
     with col_t2:
@@ -556,7 +556,7 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                         dp1, dp2, dp3 = st.columns(3)
                         dp1.metric("MW (Molecular Weight)", f"{d_props['molecular_weight']} Da (Daltons / atomic mass units)")
                         dp2.metric("logP (Octanol–Water Partition Coefficient)", f"{d_props['logp']}")
-                        dp3.metric("TPSA (Topological Polar Surface Area)", f"{d_props['tpsa']} Å² (square Angstroms)")
+                        dp3.metric("TPSA (Topological Polar Surface Area)", f"{d_props['tpsa']} Å²")
                         dp4, dp5, dp6 = st.columns(3)
                         dp4.metric("HBD (Hydrogen-Bond Donors)", d_props['hbd'])
                         dp5.metric("HBA (Hydrogen-Bond Acceptors)", d_props['hba'])
@@ -576,7 +576,7 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
             st.markdown("---")
             # Search exhaustiveness and random seeds
             if is_advanced_mode:
-                st.markdown("##### ⚙️ Advanced Vina (AutoDock Vina Molecular Docking Engine) Settings:")
+                st.markdown("##### ⚙️ Advanced Vina Settings:")
                 col_cfg1, col_cfg2 = st.columns(2)
                 with col_cfg1:
                     exhaustiveness = st.select_slider(
@@ -602,7 +602,7 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                         key="dock_single_seeds"
                     )
                     energy_range = st.slider(
-                        "Pose Energy Range — kcal/mol (kilocalories per mole):",
+                        "Pose Energy Range — kcal/mol:",
                         min_value=1.0,
                         max_value=5.0,
                         value=3.0,
@@ -725,21 +725,23 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
             if coord_source in {"deposited", "rcsb_biological_assembly"}
             else {}
         )
+        structure_advisories = []
+        low_residue_rscc = []
         if quality_meta:
             quality_bits = [
-                f"Resolution: {quality_meta.get('resolution_angstrom') or 'unknown'} Å (Angstroms)",
+                f"Resolution: {quality_meta.get('resolution_angstrom') or 'unknown'} Å",
                 f"R_free: {quality_meta.get('r_free') if quality_meta.get('r_free') is not None else 'unknown'}",
                 f"Method: {quality_meta.get('experimental_method') or 'unknown'}",
             ]
             if quality_meta.get("ligand_rscc") is not None:
                 quality_bits.append(
-                    f"Ref-ligand RSCC (Real-Space Correlation Coefficient): {quality_meta['ligand_rscc']:.3f} "
+                    f"Ref-ligand RSCC: {quality_meta['ligand_rscc']:.3f} "
                     f"({quality_meta.get('ligand_code', '')})"
                 )
             residue_rscc = quality_meta.get("residue_rscc_summary") or {}
             if residue_rscc.get("n_residues"):
                 quality_bits.append(
-                    f"Protein RSCC (Real-Space Correlation Coefficient) median: {residue_rscc['median_rscc']:.3f} "
+                    f"Protein RSCC median: {residue_rscc['median_rscc']:.3f} "
                     f"(<0.8: {residue_rscc['n_below_0_8']}/{residue_rscc['n_residues']})"
                 )
             st.caption(" | ".join(quality_bits))
@@ -747,12 +749,12 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                 quality_meta.get("resolution_angstrom") is not None
                 and quality_meta["resolution_angstrom"] > 2.5
             ):
-                st.warning(
-                    "⚠️ Low structural resolution (> 2.5 Å [Angstroms]); binding-pocket geometry may be uncertain. "
+                structure_advisories.append(
+                    "⚠️ Low structural resolution (> 2.5 Å); binding-pocket geometry may be uncertain. "
                     "This is a structure-quality advisory, not an automatic rejection."
                 )
             if quality_meta.get("r_free") is not None and quality_meta["r_free"] >= 0.25:
-                st.warning(
+                structure_advisories.append(
                     f"⚠️ R_free = {quality_meta['r_free']:.3f} (≥ 0.25); model quality is below the "
                     "benchmark guideline (R_free < 0.25). Binding-pocket geometry and ligand "
                     "placement may be less reliable. This is an advisory, not an automatic rejection."
@@ -761,8 +763,8 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                 quality_meta.get("ligand_rscc") is not None
                 and quality_meta["ligand_rscc"] < 0.8
             ):
-                st.warning(
-                    "⚠️ Reference-ligand RSCC (Real-Space Correlation Coefficient) < 0.8; electron density is weak "
+                structure_advisories.append(
+                    "⚠️ Reference-ligand RSCC < 0.8; electron density is weak "
                     "and the crystal pose may be uncertain."
                 )
             if (
@@ -772,18 +774,11 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                     or (residue_rscc.get("fraction_below_0_8") or 0) > 0.1
                 )
             ):
-                st.warning(
-                    "⚠️ Protein-residue RSCC (Real-Space Correlation Coefficient) is low (median < 0.8 or >10% of residues < 0.8); "
+                structure_advisories.append(
+                    "⚠️ Protein-residue RSCC is low (median < 0.8 or >10% of residues < 0.8); "
                     "review local density quality before relying on the pocket."
                 )
             low_residue_rscc = quality_meta.get("residue_rscc_low") or []
-            if low_residue_rscc:
-                with st.expander("🔎 Protein Residues with RSCC (Real-Space Correlation Coefficient) < 0.8"):
-                    st.dataframe(
-                        low_residue_rscc,
-                        use_container_width=True,
-                        hide_index=True,
-                    )
         run_id, run_dir = create_run_directory(f"dock_{target_id}")
 
         # Save immutable source PDB
@@ -882,8 +877,20 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                 + ". Prefer the smallest box that contains the pocket; reduce padding or "
                 "increase exhaustiveness."
             )
-            st.warning(grid_warning)
+            structure_advisories.append(grid_warning)
             grid_box_warnings.append(grid_warning)
+
+        if structure_advisories:
+            with st.expander("⚠️ Structure Quality Advisories", expanded=False):
+                for adv in structure_advisories:
+                    st.warning(adv)
+                if low_residue_rscc:
+                    with st.expander("🔎 Protein Residues with RSCC < 0.8"):
+                        st.dataframe(
+                            low_residue_rscc,
+                            use_container_width=True,
+                            hide_index=True,
+                        )
 
         # 3. Write initial manifest before running executables
         initial_data = {
@@ -900,7 +907,7 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
         write_initial_manifest(run_dir, initial_data)
 
         # 4. Receptor & Ligand Preparation
-        with st.spinner("Preparing receptor and ligand and running Vina (AutoDock Vina Molecular Docking Engine)..."):
+        with st.spinner("Preparing receptor and ligand and running Vina..."):
             try:
                 clean_pdb, rec_pdbqt, prep_rep = prepare_receptor(
                     pdb_data,
@@ -958,7 +965,7 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                     results_meta={},
                     warnings=[f"Engine failure: {e}"]
                 )
-                st.error(f"Vina (AutoDock Vina Molecular Docking Engine) execution failed: {e}")
+                st.error(f"Vina execution failed: {e}")
                 return
 
             # 6. Cluster poses across seeds
@@ -1137,7 +1144,7 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
         val_stat = res["validation_status"]
         val_det = res.get("validation_details")
         best_score = lowest_vina_score(res.get("poses", []))
-        best_score_display = f"{best_score:.2f} kcal/mol (kilocalories per mole)" if best_score is not None else "—"
+        best_score_display = f"{best_score:.2f} kcal/mol" if best_score is not None else "—"
         total_poses_count = len(res.get("poses", []))
         clusters_count = len(res.get("clusters", []))
 
@@ -1156,7 +1163,7 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                 gate_badge = "⚪ Unavailable (No Reference Ligand)"
 
             kpi_col1.metric("🎯 Validation Status", gate_badge)
-            kpi_col2.metric("Lowest Vina (AutoDock Vina Molecular Docking Engine) Score", best_score_display)
+            kpi_col2.metric("Lowest Vina Score", best_score_display)
             kpi_col3.metric("🔢 Calculated Poses", f"{total_poses_count} poses")
             kpi_col4.metric("👥 Pose Clusters", f"{clusters_count} clusters")
 
@@ -1168,30 +1175,22 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                     st.markdown("- No docked pose is available.")
                 else:
                     st.markdown(
-                        f"- **Lowest Vina (AutoDock Vina Molecular Docking Engine) score among all calculated poses:** "
-                        f"`{best_score:.2f} kcal/mol (kilocalories per mole)`\n"
-                        "- This is a Vina scoring-function value for this exact prepared "
-                        "receptor, ligand, grid, and search protocol. It is useful for "
-                        "within-protocol pose ranking only; it is not experimental binding "
-                        "free energy, efficacy, resistance, dose, or clinical guidance."
+                        f"- **Lowest Vina score:** `{best_score:.2f} kcal/mol`"
                     )
                 if d_props and "lipinski_pass" in d_props:
                     st.markdown(
-                        "- **Rule-of-Five Screen:** "
-                        f"`{d_props['lipinski_violations']}` threshold violation(s). "
-                        "This is a physicochemical heuristic only, not an ADME (Absorption, Distribution, Metabolism, and Excretion), "
-                        "safety, or clinical-use prediction."
+                        f"- **Rule-of-Five:** `{d_props['lipinski_violations']}` violations"
                     )
 
         # Status badge & warnings
         if val_stat == "validation passed (Top-10 recovery)":
             rec_r = val_det['recovery']['rmsd_angstrom'] if val_det else res['redocking_rmsd']
             st.warning(
-                f"🟡 Validation Status: {val_stat} — Best Top-10 recovery RMSD (Root-Mean-Square Deviation) = {rec_r} Å (Angstroms) <= 2.0 Å. "
+                f"🟡 Validation Status: {val_stat} — Best Top-10 recovery RMSD = {rec_r} Å <= 2.0 Å. "
                 "Top-1 did not reproduce the crystal pose; this is not full protocol validation."
             )
         elif val_stat == "validation passed":
-            st.success(f"🎯 Validation Status: validation passed — RMSD (Root-Mean-Square Deviation) = {res['redocking_rmsd']} Å (Angstroms) <= 2.0 Å")
+            st.success(f"🎯 Validation Status: validation passed — RMSD = {res['redocking_rmsd']} Å <= 2.0 Å")
         elif val_stat == "validation failed":
             st.error("❌ Validation Status: validation failed")
         elif val_stat == "validation unavailable":
@@ -1204,8 +1203,8 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
             t1 = val_det["top1"]
             rec = val_det["recovery"]
             val_summary_md = (
-                f"- **Top-1 Vina (AutoDock Vina Molecular Docking Engine) pose RMSD (Root-Mean-Square Deviation):** `{t1['rmsd_angstrom']:.3f} Å (Angstroms)` — Score: `{t1['score']} kcal/mol (kilocalories per mole)`\n"
-                f"- **Best Top-10 recovery RMSD (Root-Mean-Square Deviation):** `{rec['rmsd_angstrom']:.3f} Å (Angstroms)` — Seed `{rec['seed']}`, Rank `{rec['rank']}`, Score: `{rec['score']} kcal/mol (kilocalories per mole)`\n"
+                f"- **Top-1 Vina pose RMSD:** `{t1['rmsd_angstrom']:.3f} Å` — Score: `{t1['score']} kcal/mol`\n"
+                f"- **Best Top-10 recovery RMSD:** `{rec['rmsd_angstrom']:.3f} Å` — Seed `{rec['seed']}`, Rank `{rec['rank']}`, Score: `{rec['score']} kcal/mol`\n"
                 f"- **Recovery cluster support:** `{rec['cluster_seed_count']}` independent seeds `{rec['supporting_seeds']}`"
             )
             if is_advanced_mode:
@@ -1215,7 +1214,10 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                     st.markdown(val_summary_md)
 
         for w in res.get("warnings", []):
-            st.warning(f"⚠️ {w}")
+            clean_w = w.lstrip("⚠️ ").strip()
+            if "Search box exceeds the 30 Å guideline" in clean_w:
+                continue
+            st.warning(f"⚠️ {clean_w}")
 
         # Organized Result Tabs
         tab_3d, tab_poses = st.tabs([
@@ -1268,7 +1270,7 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                 if getattr(sel_p, "seed", None) == validated_pose.get("seed") and getattr(sel_p, "rank", None) == validated_pose.get("rank"):
                     st.caption(
                         f"🎯 Displayed pose: {validated_label} — "
-                        f"RMSD (Root-Mean-Square Deviation) = {validated_pose['rmsd_angstrom']:.3f} Å (Angstroms)."
+                        f"RMSD = {validated_pose['rmsd_angstrom']:.3f} Å."
                     )
                 else:
                     st.caption("ℹ️ User-selected pose displayed; not necessarily the validated pose.")
@@ -1327,38 +1329,38 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                     si_col2.metric("Carbon Contact Candidates", c_count)
 
                     if polar_candidates:
-                        st.markdown("###### 💧 Polar Contact Candidates (<= 3.5 Å [Angstroms]):")
+                        st.markdown("###### 💧 Polar Contact Candidates (<= 3.5 Å):")
                         df_hb = pd.DataFrame(polar_candidates).rename(columns={
                             "residue": "Residue",
                             "chain": "Chain",
                             "rec_atom": "Receptor Atom",
                             "lig_atom": "Ligand Atom",
-                            "distance_angstrom": "Distance — Å (Angstroms)"
-                        })[["Residue", "Chain", "Receptor Atom", "Ligand Atom", "Distance — Å (Angstroms)"]]
+                            "distance_angstrom": "Distance — Å"
+                        })[["Residue", "Chain", "Receptor Atom", "Ligand Atom", "Distance — Å"]]
                         st.dataframe(df_hb, use_container_width=True, hide_index=True, height=160)
                     else:
-                        st.info("No direct polar contact candidates within <= 3.5 Å (Angstroms) for this pose.")
+                        st.info("No direct polar contact candidates within <= 3.5 Å for this pose.")
 
                     if single_inter.get("interacting_residues"):
-                        st.markdown("###### 🧱 Surrounding Pocket Residues (<= 4.0 Å [Angstroms]):")
+                        st.markdown("###### 🧱 Surrounding Pocket Residues (<= 4.0 Å):")
                         df_ir = pd.DataFrame(single_inter["interacting_residues"]).rename(columns={
                             "res_name": "Residue",
                             "res_num": "Number",
                             "chain": "Chain",
-                            "min_distance": "Min Distance — Å (Angstroms)"
-                        })[["Residue", "Number", "Chain", "Min Distance — Å (Angstroms)"]]
+                            "min_distance": "Min Distance — Å"
+                        })[["Residue", "Number", "Chain", "Min Distance — Å"]]
                         st.dataframe(df_ir, use_container_width=True, hide_index=True, height=160)
 
         with tab_poses:
             poses_data = [
                 {
                     "Rank": p.rank,
-                    "Vina (AutoDock Vina Molecular Docking Engine) Score — kcal/mol (kilocalories per mole)": p.score,
+                    "Vina Score — kcal/mol": p.score,
                     "Seed": p.seed,
                     "Cluster": p.cluster_id,
-                    "RMSD l.b. (Root-Mean-Square Deviation Lower Bound)": p.rmsd_lb,
-                    "RMSD u.b. (Root-Mean-Square Deviation Upper Bound)": p.rmsd_ub,
-                    "Reference RMSD (Root-Mean-Square Deviation) — Å (Angstroms)": f"{p.rmsd_to_reference:.3f}" if p.rmsd_to_reference is not None else "—"
+                    "RMSD l.b.": p.rmsd_lb,
+                    "RMSD u.b.": p.rmsd_ub,
+                    "Reference RMSD — Å": f"{p.rmsd_to_reference:.3f}" if p.rmsd_to_reference is not None else "—"
                 }
                 for p in res["poses"]
             ]
@@ -1374,8 +1376,8 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                         "Cluster": cl.cluster_id,
                         "Supporting Seeds Count": cl.seed_count,
                         "Seeds": str(cl.supporting_seeds),
-                        "Top Score — kcal/mol (kilocalories per mole)": cl.top_score,
-                        "Median Score — kcal/mol (kilocalories per mole)": cl.median_score
+                        "Top Score — kcal/mol": cl.top_score,
+                        "Median Score — kcal/mol": cl.median_score
                     }
                     for cl in res["clusters"]
                 ]
@@ -1683,7 +1685,7 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                         cdp1, cdp2, cdp3 = st.columns(3)
                         cdp1.metric("MW (Molecular Weight)", f"{comp_drug_props['molecular_weight']} Da (Daltons / atomic mass units)")
                         cdp2.metric("logP (Octanol–Water Partition Coefficient)", f"{comp_drug_props['logp']}")
-                        cdp3.metric("TPSA (Topological Polar Surface Area)", f"{comp_drug_props['tpsa']} Å² (square Angstroms)")
+                        cdp3.metric("TPSA (Topological Polar Surface Area)", f"{comp_drug_props['tpsa']} Å²")
                         cdp4, cdp5, cdp6 = st.columns(3)
                         cdp4.metric("HBD (Hydrogen-Bond Donors)", comp_drug_props['hbd'])
                         cdp5.metric("HBA (Hydrogen-Bond Acceptors)", comp_drug_props['hba'])
@@ -1945,11 +1947,11 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                 t1 = redocking_val["top1"]
                 rec = redocking_val["recovery"]
                 cutoff = redocking_val.get("rmsd_cutoff", 2.0)
-                with st.expander("🔬 WT (Wild-Type Reference) Redocking Validation Metrics — RMSD (Root-Mean-Square Deviation)"):
+                with st.expander("🔬 WT (Wild-Type Reference) Redocking Validation Metrics — RMSD"):
                     st.markdown(
-                        f"- **Acceptance Cutoff — RMSD (Root-Mean-Square Deviation):** `<= {cutoff} Å (Angstroms)`\n"
-                        f"- **Top-1 Vina (AutoDock Vina Molecular Docking Engine) pose RMSD:** `{t1['rmsd_angstrom']:.3f} Å (Angstroms)` — Score: `{t1['score']} kcal/mol (kilocalories per mole)`\n"
-                        f"- **Best Top-10 recovery RMSD:** `{rec['rmsd_angstrom']:.3f} Å (Angstroms)` — Seed `{rec['seed']}`, Rank `{rec['rank']}`, Score: `{rec['score']} kcal/mol (kilocalories per mole)`\n"
+                        f"- **Acceptance Cutoff — RMSD:** `<= {cutoff} Å`\n"
+                        f"- **Top-1 Vina pose RMSD:** `{t1['rmsd_angstrom']:.3f} Å` — Score: `{t1['score']} kcal/mol`\n"
+                        f"- **Best Top-10 recovery RMSD:** `{rec['rmsd_angstrom']:.3f} Å` — Seed `{rec['seed']}`, Rank `{rec['rank']}`, Score: `{rec['score']} kcal/mol`\n"
                         f"- **Independent seed support for cluster:** `{rec['cluster_seed_count']}` seeds `{rec['supporting_seeds']}`\n"
                         f"- **Mapping method:** `{redocking_val.get('method', 'symmetry-aware heavy-atom mapped RMSD (no-fit)')}`"
                     )
@@ -1994,12 +1996,12 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
             # Top KPI Metric Cards
             with st.container(border=True):
                 kpi_c1, kpi_c2, kpi_c3, kpi_c4 = st.columns(4)
-                kpi_c1.metric("WT (Wild-Type Reference) Median Score", f"{comp['healthy']['dominant_cluster_median']} kcal/mol (kilocalories per mole)")
-                kpi_c2.metric("MT (Mutant Variant) Median Score", f"{comp['mutant']['dominant_cluster_median']} kcal/mol (kilocalories per mole)")
+                kpi_c1.metric("WT (Wild-Type Reference) Median Score", f"{comp['healthy']['dominant_cluster_median']} kcal/mol")
+                kpi_c2.metric("MT (Mutant Variant) Median Score", f"{comp['mutant']['dominant_cluster_median']} kcal/mol")
                 kpi_c3.metric(
-                    "ΔScore (Docking Score Difference)",
+                    "ΔScore",
                     (
-                        f"{delta_score:+.2f} kcal/mol (kilocalories per mole)"
+                        f"{delta_score:+.2f} kcal/mol"
                         if delta_score is not None
                         else "Not evaluated"
                     ),
@@ -2074,7 +2076,7 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                         f"**🟢 WT (Wild-Type Reference): {comp['healthy']['target_id']}** "
                         f"[Cluster #{comp['healthy']['dominant_cluster_id']} | "
                         f"Seeds: {comp['healthy']['seed_count']} | "
-                        f"Median: {comp['healthy']['dominant_cluster_median']} kcal/mol (kilocalories per mole)]"
+                        f"Median: {comp['healthy']['dominant_cluster_median']} kcal/mol]"
                     )
                     st.caption("🟣 Magenta: WT (Wild-Type Reference) Polar-Contact Residues | 🟠 Orange: Binding-Pocket Residues")
                     h_view_html = render_docked_complex_3d(
@@ -2098,7 +2100,7 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                         f"**🔴 MT (Mutant Variant): {comp['mutant']['target_id']}** "
                         f"[Cluster #{comp['mutant']['dominant_cluster_id']} | "
                         f"Seeds: {comp['mutant']['seed_count']} | "
-                        f"Median: {comp['mutant']['dominant_cluster_median']} kcal/mol (kilocalories per mole)]"
+                        f"Median: {comp['mutant']['dominant_cluster_median']} kcal/mol]"
                     )
                     st.caption("🟣 Magenta: MT (Mutant Variant) Polar-Contact Residues | 🟠 Orange: Binding-Pocket Residues")
                     m_view_html = render_docked_complex_3d(
@@ -2161,22 +2163,22 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                         h_polar = h_inter.get("polar_contact_candidates") or h_inter.get("hbonds", [])
                         if h_polar:
                             df_h_hb = pd.DataFrame(h_polar).rename(columns={
-                                "residue": "Residue", "chain": "Chain", "rec_atom": "Receptor Atom", "lig_atom": "Ligand Atom", "distance_angstrom": "Distance — Å (Angstroms)"
-                            })[["Residue", "Chain", "Receptor Atom", "Ligand Atom", "Distance — Å (Angstroms)"]]
+                                "residue": "Residue", "chain": "Chain", "rec_atom": "Receptor Atom", "lig_atom": "Ligand Atom", "distance_angstrom": "Distance — Å"
+                            })[["Residue", "Chain", "Receptor Atom", "Ligand Atom", "Distance — Å"]]
                             st.dataframe(df_h_hb, use_container_width=True, hide_index=True)
                         else:
-                            st.caption("No polar contact candidates within <= 3.5 Å (Angstroms).")
+                            st.caption("No polar contact candidates within <= 3.5 Å.")
 
                     with col_tb2:
                         st.markdown("**🔴 MT (Mutant Variant) Polar Contact Candidates:**")
                         m_polar = m_inter.get("polar_contact_candidates") or m_inter.get("hbonds", [])
                         if m_polar:
                             df_m_hb = pd.DataFrame(m_polar).rename(columns={
-                                "residue": "Residue", "chain": "Chain", "rec_atom": "Receptor Atom", "lig_atom": "Ligand Atom", "distance_angstrom": "Distance — Å (Angstroms)"
-                            })[["Residue", "Chain", "Receptor Atom", "Ligand Atom", "Distance — Å (Angstroms)"]]
+                                "residue": "Residue", "chain": "Chain", "rec_atom": "Receptor Atom", "lig_atom": "Ligand Atom", "distance_angstrom": "Distance — Å"
+                            })[["Residue", "Chain", "Receptor Atom", "Ligand Atom", "Distance — Å"]]
                             st.dataframe(df_m_hb, use_container_width=True, hide_index=True)
                         else:
-                            st.caption("No polar contact candidates within <= 3.5 Å (Angstroms).")
+                            st.caption("No polar contact candidates within <= 3.5 Å.")
 
         # Render Exploratory Cross Results
         cross_res = st.session_state.get("exploratory_cross_result")
@@ -2196,12 +2198,12 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                     st.markdown(f"### 🏛️ Receptor 1: {r1_data['target_id']}")
                     if r1_data.get("cluster_reproducible"):
                         st.success("✅ Reproducible exploratory cluster (>= 2 independent seeds)")
-                        st.metric("Median Score", f"{r1_data['dominant_cluster_median']} kcal/mol (kilocalories per mole)")
+                        st.metric("Median Score", f"{r1_data['dominant_cluster_median']} kcal/mol")
                     else:
                         st.warning("⚠️ Exploratory pose without independent-seed support")
                         r1_dom_p = r1_data.get("dominant_cluster_pose")
                         r1_disp_score = r1_dom_p.score if r1_dom_p else r1_data.get("dominant_cluster_median")
-                        st.metric("Exploratory Pose Score", f"{r1_disp_score} kcal/mol (kilocalories per mole)")
+                        st.metric("Exploratory Pose Score", f"{r1_disp_score} kcal/mol")
 
                     r1_dom_pose = r1_data.get("dominant_cluster_pose")
                     if r1_dom_pose:
@@ -2229,12 +2231,12 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                     st.markdown(f"### 🏛️ Receptor 2: {r2_data['target_id']}")
                     if r2_data.get("cluster_reproducible"):
                         st.success("✅ Reproducible exploratory cluster (>= 2 independent seeds)")
-                        st.metric("Median Score", f"{r2_data['dominant_cluster_median']} kcal/mol (kilocalories per mole)")
+                        st.metric("Median Score", f"{r2_data['dominant_cluster_median']} kcal/mol")
                     else:
                         st.warning("⚠️ Exploratory pose without independent-seed support")
                         r2_dom_p = r2_data.get("dominant_cluster_pose")
                         r2_disp_score = r2_dom_p.score if r2_dom_p else r2_data.get("dominant_cluster_median")
-                        st.metric("Exploratory Pose Score", f"{r2_disp_score} kcal/mol (kilocalories per mole)")
+                        st.metric("Exploratory Pose Score", f"{r2_disp_score} kcal/mol")
 
                     r2_dom_pose = r2_data.get("dominant_cluster_pose")
                     if r2_dom_pose:
@@ -2373,25 +2375,23 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                                 if delta_s is None:
                                     r_tag = "Not evaluated (binding-mode gate)"
                                 elif delta_s >= moderate_band:
-                                    r_tag = f"Score increase >= +{moderate_band:.2f} kcal/mol (kilocalories per mole)"
+                                    r_tag = f"Score increase >= +{moderate_band:.2f} kcal/mol"
                                 elif delta_s >= neutral_band:
                                     r_tag = (
-                                        f"Score increase +{neutral_band:.2f} to +{moderate_band:.2f} "
-                                        "kcal/mol (kilocalories per mole)"
+                                        f"Score increase +{neutral_band:.2f} to +{moderate_band:.2f} kcal/mol"
                                     )
                                 elif delta_s <= -moderate_band:
-                                    r_tag = f"Score decrease <= -{moderate_band:.2f} kcal/mol (kilocalories per mole)"
+                                    r_tag = f"Score decrease <= -{moderate_band:.2f} kcal/mol"
                                 else:
                                     r_tag = (
-                                        f"Within protocol noise — |ΔScore (Docking Score Difference)| "
-                                        f"< {neutral_band:.2f} kcal/mol (kilocalories per mole)"
+                                        f"Within protocol noise — |ΔScore| < {neutral_band:.2f} kcal/mol"
                                     )
 
                                 screen_results.append({
                                     "Drug": d_name,
-                                    "WT (Wild-Type Reference) kcal/mol (kilocalories per mole)": wt_s,
-                                    "MT (Mutant Variant) kcal/mol (kilocalories per mole)": mt_s,
-                                    "ΔScore (Docking Score Difference)": delta_s,
+                                    "WT (Wild-Type Reference) kcal/mol": wt_s,
+                                    "MT (Mutant Variant) kcal/mol": mt_s,
+                                    "ΔScore": delta_s,
                                     "Exploratory Score-Difference Flag": r_tag
                                 })
                             except Exception as ex:
@@ -2409,8 +2409,8 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
 
                     fig_screen = go.Figure()
                     d_names = [r["Drug"] for r in saved_screen_res]
-                    wt_vals = [r["WT (Wild-Type Reference) kcal/mol (kilocalories per mole)"] for r in saved_screen_res]
-                    mt_vals = [r["MT (Mutant Variant) kcal/mol (kilocalories per mole)"] for r in saved_screen_res]
+                    wt_vals = [r["WT (Wild-Type Reference) kcal/mol"] for r in saved_screen_res]
+                    mt_vals = [r["MT (Mutant Variant) kcal/mol"] for r in saved_screen_res]
 
                     fig_screen.add_trace(go.Bar(
                         x=d_names, y=wt_vals, name="WT (Wild-Type Reference)",
@@ -2421,9 +2421,9 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                         marker_color="#da3633"
                     ))
                     fig_screen.update_layout(
-                        title="Computational Docking Score Comparison Across Drug Panel — kcal/mol (kilocalories per mole; Lower Is Better)",
+                        title="Computational Docking Score Comparison Across Drug Panel — kcal/mol (Lower Is Better)",
                         xaxis_title="Drug Compound",
-                        yaxis_title="Docking Score — kcal/mol (kilocalories per mole)",
+                        yaxis_title="Docking Score — kcal/mol",
                         barmode="group",
                         template="plotly_dark",
                         height=380,
