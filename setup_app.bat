@@ -1,12 +1,29 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-if not exist ".venv\Scripts\python.exe" (
-    python -m venv .venv
-    if errorlevel 1 exit /b 1
+echo ==========================================================
+echo Installing Bio_V2 dependencies on this laptop...
+echo ==========================================================
+
+:: Install to Windows System Python 3.12
+py -3.12 -m pip install --upgrade pip
+py -3.12 -m pip install -r requirements.txt
+if not errorlevel 1 (
+    echo [OK] Setup complete! You can now start the app with run_app.bat.
+    pause
+    exit /b 0
 )
-".venv\Scripts\python.exe" -m ensurepip --upgrade
-if errorlevel 1 exit /b 1
-".venv\Scripts\python.exe" -m pip install -r requirements.txt
-if errorlevel 1 exit /b 1
-echo Setup complete. Start the app with run_app.bat.
+
+:: Fallback to python
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+if not errorlevel 1 (
+    echo [OK] Setup complete! You can now start the app with run_app.bat.
+    pause
+    exit /b 0
+)
+
+echo [ERROR] Installation failed. Please ensure Python 3.12 is installed.
+pause
+exit /b 1
+
