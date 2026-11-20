@@ -266,8 +266,6 @@ def render_docking_tab():
         require_openbabel_formats()
     except Exception as exc:
         st.error(f"❌ Open Babel is not ready for docking: {exc}")
-        if "does not provide" in str(exc).lower():
-            st.info("Redeploy after installing the pinned openbabel-wheel dependency.")
         return
 
 
@@ -756,7 +754,7 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
             if quality_meta.get("r_free") is not None and quality_meta["r_free"] >= 0.25:
                 st.warning(
                     f"⚠️ R_free = {quality_meta['r_free']:.3f} (≥ 0.25); model quality is below the "
-                    "wiki benchmark guideline (R_free < 0.25). Binding-pocket geometry and ligand "
+                    "benchmark guideline (R_free < 0.25). Binding-pocket geometry and ligand "
                     "placement may be less reliable. This is an advisory, not an automatic rejection."
                 )
             if (

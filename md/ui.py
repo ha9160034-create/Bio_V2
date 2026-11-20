@@ -1,28 +1,4 @@
-"""
-Molecular Dynamics Streamlit UI & Interactive Biophysical Dashboard
-===================================================================
-
-Scientific Traceability & Wiki Documentation:
----------------------------------------------
-- `wiki/gromacs-protein-ligand-protocol.md`: Justin Lemkul's GROMACS Protocol.
-- `wiki/open-force-field-and-ligand-parameterization.md`: Small-Molecule Force Fields (OpenFF Sage, CGenFF, ACPYPE).
-- `wiki/simulation-and-benchmark-best-practices.md`: LiveCoMS Foundations & Benchmark Best Practices.
-- `wiki/mm-pbsa-and-mm-gbsa.md`: MM-PBSA / MM-GBSA Binding Free Energy Rescoring.
-
-Biophysical Implementation Guardrails:
---------------------------------------
-1. Unit Cell: Default to rhombic dodecahedron (-bt dodecahedron -d 1.0) to save ~23% solvent volume.
-2. Restraints: Harmonic position restraints (k = 1000 kJ/(mol*nm^2)) on ligand heavy atoms during equilibration.
-3. Thermostats: Merged tc-grps = Protein_Ligand Water_and_ions (never couple small ligand independently).
-4. Ensemble Validity: Reject Berendsen barostat in production; enforce Parrinello-Rahman and v-rescale.
-5. Trajectory Processing: Always apply PBC re-wrapping (trjconv -pbc mol -ur compact) before analysis.
-
-Honesty policy
---------------
-This tab only reports artifacts produced by a real GROMACS run. When GROMACS,
-ACPYPE or AmberTools are missing, the UI explains what is missing and refuses
-to run instead of fabricating a trajectory or an MM-PBSA number.
-"""
+# Molecular Dynamics Streamlit UI and analysis dashboard
 
 from __future__ import annotations
 
@@ -278,8 +254,7 @@ def render_md_tab():
     col_stat1, col_stat2, col_stat3 = st.columns(3)
     with col_stat1:
         if gmx_info["available"]:
-            where = "WSL2 (Windows Subsystem for Linux v2)" if gmx_info.get("backend") == "wsl" else "Native"
-            st.success(f"🟢 GROMACS (GROningen MAchine for Chemical Simulations) Available ({gmx_info['version']}) — {where}")
+            st.success(f"🟢 GROMACS (GROningen MAchine for Chemical Simulations) Available ({gmx_info['version']})")
         else:
             st.error("🔴 GROMACS (GROningen MAchine for Chemical Simulations) unavailable. No simulation will be executed.")
     with col_stat2:
@@ -306,25 +281,6 @@ def render_md_tab():
             "Ubuntu (e.g., `pip install --user acpype`); ACPYPE bundles its own AmberTools binaries."
         )
         return
-
-    preflight_missing = [
-        label
-        for label, available in (
-            ("ACPYPE", tools.get("acpype")),
-            ("Antechamber", tools.get("antechamber")),
-            ("OpenBabel", tools.get("obabel")),
-        )
-        if not available
-    ]
-    if preflight_missing or not tools.get("force_fields"):
-        with st.expander("🧰 Simulation Backend Preflight Check", expanded=False):
-            st.markdown(
-                f"- **GROMACS (GROningen MAchine for Chemical Simulations):** `{gmx_info['path']}` ({gmx_info.get('backend')})\n"
-                f"- **ACPYPE (AnteChamber PYthon Parser interfacE):** {'✅' if tools.get('acpype') else '❌'} | "
-                f"**Antechamber:** {'✅ (PATH or bundled ACPYPE)' if tools.get('antechamber') else '❌'} | "
-                f"**OpenBabel:** {'✅' if tools.get('obabel') else '❌'}\n"
-                f"- **Available Force Fields:** {', '.join(tools.get('force_fields', []))}"
-            )
 
     st.markdown("---")
     st.subheader("1️⃣ Docking Run Selection & Optimal Binding Pose Extraction")
@@ -497,7 +453,7 @@ def render_md_tab():
         "Retain monatomic metal ions (ZN/MG/CA/K)",
         value=False,
         help=(
-            "When enabled, supported monatomic ions are added to complex.gro / topol.top instead of being stripped. "
+            "When enabled, supported monatomic ions are retained in the simulated system instead of being stripped. "
             "Polyatomic cofactors such as HEM remain rejected."
         ),
     )
@@ -505,7 +461,7 @@ def render_md_tab():
         "Retain crystallographic water molecules (HOH/WAT)",
         value=False,
         help=(
-            "Crystallographic waters are appended as SOL residues to complex.gro / topol.top. "
+            "Crystallographic waters are retained as solvent residues. "
             "Missing hydrogens are placed geometrically using TIP3P (Transferable Intermolecular Potential with 3 Points Water Model) geometry with approximate orientation."
         ),
     )
@@ -803,16 +759,8 @@ def render_md_tab():
     with tab_mmpbsa:
         if mmpbsa_res is None:
             st.warning(MMPBSA_NOT_AVAILABLE_MESSAGE)
-            st.code(
-                "gmx_MMPBSA -O -cs prod_md.tpr -ci index.ndx -cg Protein Ligand "
-                "-ct prod_md_center.xtc -cp topol.top -o FINAL_RESULTS_MMPBSA.dat",
-                language="bash",
-            )
             st.caption(
-                "This command matches the official `gmx_MMPBSA` interface: `-cs` complex structure — "
-                "TPR (Portable Binary Run Input File), `-ci` NDX (Atom Index File), `-cg` receptor/ligand groups, "
-                "`-ct` XTC (Compressed Trajectory File), and `-cp` TOP (Master System Topology File). "
-                "Run manually after verifying the trajectory is PBC (Periodic Boundary Conditions) re-wrapped."
+                "Run gmx_MMPBSA manually on the PBC-wrapped production trajectory to compute binding free energy."
             )
         else:
             st.plotly_chart(create_mmpbsa_breakdown_plotly(mmpbsa_res), width="stretch")
@@ -871,13 +819,11 @@ def render_md_tab():
             st.info("Trajectory PDB (Protein Data Bank) file not found.")
 
     run_warnings = manifest.get("warnings", [])
-    run_limitations = manifest.get("limitations", [])
-    if run_warnings or run_limitations:
-        with st.expander("📁 Run Artifacts & Warnings"):
-            st.json(manifest.get("artifacts", {}))
+    if run_warnings:
+        with st.expander("📁 Run Warnings"):
             for warning in run_warnings:
                 st.warning(warning)
-            for limitation in run_limitations:
+            for limitation in manifest.get("limitations", []):
                 st.caption(f"⚠️ {limitation}")
 
     st.caption(f"🛡️ {DISCLAIMER_MD}")
