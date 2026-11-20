@@ -254,9 +254,7 @@ def render_docking_tab():
     vina_ver = get_vina_version()
     st.caption(f"⚙️ Engine: {vina_ver} | Ligand Preparation: RDKit & OpenBabel")
     st.caption(
-        "⚠️ Vina (AutoDock Vina Molecular Docking Engine) score is an empirical scoring function "
-        "partially dependent on MW (Molecular Weight) bias; do not compare directly across molecules of different sizes "
-        "or equate to experimentally measured binding free energy."
+        "⚠️ Vina scores carry molecular-weight bias; compare only similar ligands and never as experimental ΔG."
     )
 
     vina_exec = get_vina_path()
@@ -268,7 +266,8 @@ def render_docking_tab():
         require_openbabel_formats()
     except Exception as exc:
         st.error(f"❌ Open Babel is not ready for docking: {exc}")
-        st.info("Redeploy after installing the pinned openbabel-wheel dependency.")
+        if "does not provide" in str(exc).lower():
+            st.info("Redeploy after installing the pinned openbabel-wheel dependency.")
         return
 
 
@@ -292,12 +291,7 @@ def render_docking_tab():
             )
             is_advanced_mode = "Advanced" in ui_mode
 
-        if is_advanced_mode:
-            st.info(
-                "🔬 **Advanced Research Mode Active:** Full control over Vina (AutoDock Vina Molecular Docking Engine) parameters "
-                "(exhaustiveness, random seeds, pose count, and energy range) with expanded statistical cluster analysis and pose validation."
-            )
-        else:
+        if not is_advanced_mode:
             st.info(
                 "⚡ **Quick Exploratory Mode Active:** Streamlined, non-clinical view of the same docking protocol "
                 "using standard settings (exhaustiveness = 8, 3 independent seeds)."
@@ -888,7 +882,7 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                 "⚠️ Search box exceeds the 30 Å guideline on "
                 + ", ".join(oversized_axes)
                 + ". Prefer the smallest box that contains the pocket; reduce padding or "
-                "increase exhaustiveness (see wiki/receptor-preparation.md)."
+                "increase exhaustiveness."
             )
             st.warning(grid_warning)
             grid_box_warnings.append(grid_warning)
@@ -1163,7 +1157,7 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
             else:
                 gate_badge = "⚪ Unavailable (No Reference Ligand)"
 
-            kpi_col1.metric("🎯 Validation Status (Gate A)", gate_badge)
+            kpi_col1.metric("🎯 Validation Status", gate_badge)
             kpi_col2.metric("Lowest Vina (AutoDock Vina Molecular Docking Engine) Score", best_score_display)
             kpi_col3.metric("🔢 Calculated Poses", f"{total_poses_count} poses")
             kpi_col4.metric("👥 Pose Clusters", f"{clusters_count} clusters")
@@ -1195,15 +1189,15 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
         if val_stat == "validation passed (Top-10 recovery)":
             rec_r = val_det['recovery']['rmsd_angstrom'] if val_det else res['redocking_rmsd']
             st.warning(
-                f"🟡 Gate A Status: {val_stat} — Best Top-10 recovery RMSD (Root-Mean-Square Deviation) = {rec_r} Å (Angstroms) <= 2.0 Å. "
+                f"🟡 Validation Status: {val_stat} — Best Top-10 recovery RMSD (Root-Mean-Square Deviation) = {rec_r} Å (Angstroms) <= 2.0 Å. "
                 "Top-1 did not reproduce the crystal pose; this is not full protocol validation."
             )
         elif val_stat == "validation passed":
-            st.success(f"🎯 Gate A Status: validation passed — RMSD (Root-Mean-Square Deviation) = {res['redocking_rmsd']} Å (Angstroms) <= 2.0 Å")
+            st.success(f"🎯 Validation Status: validation passed — RMSD (Root-Mean-Square Deviation) = {res['redocking_rmsd']} Å (Angstroms) <= 2.0 Å")
         elif val_stat == "validation failed":
-            st.error("❌ Gate A Status: validation failed")
+            st.error("❌ Validation Status: validation failed")
         elif val_stat == "validation unavailable":
-            st.warning("⚠️ Gate A Status: validation unavailable (atom count or chemical identity does not match the reference ligand).")
+            st.warning("⚠️ Validation Status: validation unavailable (atom count or chemical identity does not match the reference ligand).")
         else:
             st.info(f"ℹ️ Status: {val_stat}")
 
@@ -1219,7 +1213,7 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
             if is_advanced_mode:
                 st.markdown(val_summary_md)
             else:
-                with st.expander("🔬 Advanced Statistical & Computational Validation Details (Gate A Metrics)"):
+                with st.expander("🔬 Pose Validation Details"):
                     st.markdown(val_summary_md)
 
         for w in res.get("warnings", []):

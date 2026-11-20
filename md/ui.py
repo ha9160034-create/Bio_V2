@@ -79,13 +79,8 @@ DOCKING_RUNS_DIR = PROJECT_ROOT / "docking_runs"
 MD_RUNS_DIR = PROJECT_ROOT / "md_runs"
 
 DISCLAIMER_MD = (
-    "Biophysical Scientific Notice: MD (Molecular Dynamics) results depend on classical "
-    "force fields and implicit approximations for ions and solvent, whereas MM-PB(GB)SA — "
-    "MM-PBSA (Molecular Mechanics / Poisson–Boltzmann Surface Area) / "
-    "MM-GBSA (Molecular Mechanics / Generalized Born Surface Area) — values are displayed only "
-    "when gmx_MMPBSA has actually been executed. Results are intended for stability evaluation "
-    "and relative compound ranking, not as a substitute for experimental assays "
-    "(ITC — Isothermal Titration Calorimetry / SPR — Surface Plasmon Resonance)."
+    "MD and MM-PB(GB)SA results are computational predictions for relative ranking, "
+    "not experimental measurements."
 )
 
 
@@ -277,15 +272,6 @@ def _build_mdp_bundle(target_dir: Path, cfg: SimulationConfig) -> None:
 def render_md_tab():
     """Main entrypoint for Tab 3: Molecular Dynamics Simulation & Analysis."""
     st.header("🔬 MD (Molecular Dynamics) — GROMACS (GROningen MAchine for Chemical Simulations) Pipeline")
-    st.caption("All-atom protein–ligand simulation protocol following Lemkul and LiveCoMS standards documented in wiki/")
-
-    with st.expander("📖 Scientific References & Protocol Standards (Wiki & Biophysical Guardrails)", expanded=False):
-        st.markdown("""
-        - **`wiki/gromacs-protein-ligand-protocol.md`**: Lemkul protocol for protein–ligand complex preparation, equilibration, and production MD (Molecular Dynamics).
-        - **`wiki/open-force-field-and-ligand-parameterization.md`**: Small-molecule parameterization via ACPYPE (AnteChamber PYthon Parser interfacE), GAFF2 (General AMBER Force Field v2), and AM1-BCC (Austin Model 1 with Bond Charge Corrections).
-        - **`wiki/simulation-and-benchmark-best-practices.md`**: Prohibition of the Berendsen barostat in production and merged thermostat coupling groups.
-        - **`wiki/mm-pbsa-and-mm-gbsa.md`**: MM-PB(GB)SA — MM-PBSA (Molecular Mechanics / Poisson–Boltzmann Surface Area) / MM-GBSA (Molecular Mechanics / Generalized Born Surface Area) — computed exclusively via gmx_MMPBSA on the real production trajectory.
-        """)
 
     gmx_info = get_gmx_version()
     backend = detect_gromacs()
@@ -321,14 +307,24 @@ def render_md_tab():
         )
         return
 
-    with st.expander("🧰 Simulation Backend Preflight Check", expanded=False):
-        st.markdown(
-            f"- **GROMACS (GROningen MAchine for Chemical Simulations):** `{gmx_info['path']}` ({gmx_info.get('backend')})\n"
-            f"- **ACPYPE (AnteChamber PYthon Parser interfacE):** {'✅' if tools.get('acpype') else '❌'} | "
-            f"**Antechamber:** {'✅ (PATH or bundled ACPYPE)' if tools.get('antechamber') else '❌'} | "
-            f"**OpenBabel:** {'✅' if tools.get('obabel') else '❌'}\n"
-            f"- **Available Force Fields:** {', '.join(tools.get('force_fields', []))}"
+    preflight_missing = [
+        label
+        for label, available in (
+            ("ACPYPE", tools.get("acpype")),
+            ("Antechamber", tools.get("antechamber")),
+            ("OpenBabel", tools.get("obabel")),
         )
+        if not available
+    ]
+    if preflight_missing or not tools.get("force_fields"):
+        with st.expander("🧰 Simulation Backend Preflight Check", expanded=False):
+            st.markdown(
+                f"- **GROMACS (GROningen MAchine for Chemical Simulations):** `{gmx_info['path']}` ({gmx_info.get('backend')})\n"
+                f"- **ACPYPE (AnteChamber PYthon Parser interfacE):** {'✅' if tools.get('acpype') else '❌'} | "
+                f"**Antechamber:** {'✅ (PATH or bundled ACPYPE)' if tools.get('antechamber') else '❌'} | "
+                f"**OpenBabel:** {'✅' if tools.get('obabel') else '❌'}\n"
+                f"- **Available Force Fields:** {', '.join(tools.get('force_fields', []))}"
+            )
 
     st.markdown("---")
     st.subheader("1️⃣ Docking Run Selection & Optimal Binding Pose Extraction")
@@ -424,20 +420,8 @@ def render_md_tab():
         )
     water_model = water_options[water_label]
 
-    st.info(
-        "🔒 **Only Real Parameterization Route Available:** `gmx pdb2gmx` for the protein + "
-        "ACPYPE (AnteChamber PYthon Parser interfacE) using GAFF2 (General AMBER Force Field v2) + "
-        "AM1-BCC (Austin Model 1 with Bond Charge Corrections) for the ligand. "
-        "OpenFF (Open Force Field Sage) and CHARMM36 (Chemistry at HARvard Macromolecular Mechanics Force Field v36) / "
-        "CGenFF (CHARMM General Force Field) options are disabled because their tools/files are not installed, "
-        "and placeholder parameters will never be generated."
-    )
-    st.info(
-        "🔒 **Heavy-Atom Position Restraints:** Harmonic restraints with force constant "
-        "1000 kJ/(mol·nm²) (kilojoules per mole per square nanometer) are applied to ligand heavy atoms "
-        "during NVT (Canonical Ensemble: Constant Particles, Volume, and Temperature) and "
-        "NPT (Isothermal–Isobaric Ensemble: Constant Particles, Pressure, and Temperature) equilibration "
-        "to prevent pocket drift."
+    st.caption(
+        "Ligand heavy atoms are restrained (1000 kJ/mol/nm²) during NVT/NPT equilibration to prevent pocket drift."
     )
 
     st.markdown("---")
@@ -470,8 +454,7 @@ def render_md_tab():
         st.warning(
             "⚠️ Production duration is below 1.0 ns. Trajectories this short are "
             "generally insufficient for equilibrated stability or convergence claims; "
-            "treat RMSD, RMSF, and H-bond results as exploratory only (see "
-            "wiki/simulation-and-benchmark-best-practices.md)."
+            "treat RMSD, RMSF, and H-bond results as exploratory only."
         )
 
     col_nve1, col_nve2 = st.columns([1.0, 1.0])
@@ -630,12 +613,7 @@ def render_md_tab():
                     mime="application/zip",
                     width="stretch",
                 )
-                st.success(
-                    "Real protocol bundle ready: `topol.top` — TOP (Master System Topology File), "
-                    "`complex.gro` — GRO (GROMACS Coordinate File), ligand ITP (Include Topology File) / posre, "
-                    "MDP (Molecular Dynamics Parameters File) configs, `make_index.py` for NDX (Atom Index File), "
-                    "and `run_md.sh`/`run_md.bat`."
-                )
+                st.success("✅ Real protocol bundle ready for download.")
                 if topology.warnings:
                     for w in topology.warnings:
                         st.warning(w)
@@ -776,10 +754,9 @@ def render_md_tab():
             )
     if uncertainty:
         st.caption(
-            "Within-trajectory uncertainty (RMSD — Root-Mean-Square Deviation in Å [Angstroms]; "
-            "H-bond — Hydrogen Bond): " + "; ".join(uncertainty) + ". "
-            f"The first {burn_in_fraction * 100:.0f}% was discarded as burn-in. "
-            "These are single-trajectory error bars, not inter-replicate variance."
+            f"Within-trajectory uncertainty (burn-in {burn_in_fraction * 100:.0f}%): "
+            + "; ".join(uncertainty)
+            + ". Not inter-replicate variance."
         )
     replicate_stats = manifest.get("replicate_statistics") or {}
     if int(replicate_stats.get("n_replicates", 1)) > 1:
@@ -793,12 +770,7 @@ def render_md_tab():
                     f"(n={int(summary['n'])})"
                 )
         if comparisons:
-            st.caption(
-                "**Across Independent Replicates:** " + " | ".join(comparisons) + ". "
-                "Replicates are independent across NVT (Canonical Ensemble: Constant Particles, Volume, and Temperature), "
-                "NPT (Isothermal–Isobaric Ensemble: Constant Particles, Pressure, and Temperature), and production, "
-                "sharing only the EM (Energy Minimization) structure."
-            )
+            st.caption("Across independent replicates: " + " | ".join(comparisons) + ".")
 
     tab_rmsd, tab_rmsf, tab_hbond, tab_mmpbsa, tab_traj3d = st.tabs([
         "📈 Pose Stability — RMSD (Root-Mean-Square Deviation)",
@@ -811,7 +783,7 @@ def render_md_tab():
     with tab_rmsd:
         st.plotly_chart(create_rmsd_plotly(rmsd_records, lig_name), width="stretch")
         st.markdown(r"""
-        **Interpretation — RMSD (Root-Mean-Square Deviation):** For the reference Lemkul/JZ4 system the ligand heavy-atom RMSD plateaus at $\sim 1.0\text{ \AA}$ ($\text{Angstroms}$), which is the documented stability reference (see `wiki/gromacs-protein-ligand-protocol.md`). A generic upper bound of $2.0\text{ \AA}$ can indicate a stable pose, but sustained drift above $3.5\text{ \AA}$ indicates ligand dissociation or a conformational shift.
+        **Interpretation — RMSD (Root-Mean-Square Deviation):** For the reference Lemkul/JZ4 system the ligand heavy-atom RMSD plateaus at $\sim 1.0\text{ \AA}$ ($\text{Angstroms}$), which is the documented stability reference. A generic upper bound of $2.0\text{ \AA}$ can indicate a stable pose, but sustained drift above $3.5\text{ \AA}$ indicates ligand dissociation or a conformational shift.
         """)
 
     with tab_rmsf:
@@ -898,11 +870,14 @@ def render_md_tab():
         else:
             st.info("Trajectory PDB (Protein Data Bank) file not found.")
 
-    with st.expander("📁 Run Artifacts & Warnings"):
-        st.json(manifest.get("artifacts", {}))
-        for warning in manifest.get("warnings", []):
-            st.warning(warning)
-        for limitation in manifest.get("limitations", []):
-            st.caption(f"⚠️ {limitation}")
+    run_warnings = manifest.get("warnings", [])
+    run_limitations = manifest.get("limitations", [])
+    if run_warnings or run_limitations:
+        with st.expander("📁 Run Artifacts & Warnings"):
+            st.json(manifest.get("artifacts", {}))
+            for warning in run_warnings:
+                st.warning(warning)
+            for limitation in run_limitations:
+                st.caption(f"⚠️ {limitation}")
 
-    st.caption(f"🛡️ **Biophysical Disclaimer**: {DISCLAIMER_MD}")
+    st.caption(f"🛡️ {DISCLAIMER_MD}")

@@ -150,10 +150,7 @@ def render_analysis_tab():
     """Render the complete Structural Analysis & Mutation Comparison tab."""
     reason = st.session_state.pop("last_result_invalidation_reason", None)
     if reason:
-        st.info(
-            f"Previous analysis and docking results were cleared to prevent mixing datasets. "
-            f"{reason} Saved run folders remain available as separate provenance records."
-        )
+        st.info(f"Previous results were cleared to prevent dataset mixing. {reason}")
 
     # ── Sidebar Settings ──
     st.sidebar.header("⚙️ Analysis & Settings")
@@ -204,7 +201,7 @@ def render_analysis_tab():
         zoom_mutations = st.checkbox("Focus Camera on Mutations", value=False)
         alignment_mode = st.selectbox("Sequence Alignment Mode", ["global", "local"])
 
-    st.sidebar.info("Structural analysis searches across all chains of the selected protein.")
+    st.sidebar.info("Search covers all chains of the selected protein.")
 
     # ── Step 1: Protein Input Panels ──
     col1, col2 = st.columns(2)
@@ -402,7 +399,7 @@ def render_analysis_tab():
                 )
 
             if not proceed_with_comparison:
-                st.info("The comparison table and structural mutation impact view are hidden until you confirm or select homologous chains.")
+                st.info("Comparison is hidden until you confirm or select homologous chains.")
             else:
                 healthy_sasa_map = calculate_sasa_map(structures['h'], h_chain)
                 mutant_sasa_map = calculate_sasa_map(structures['m'], m_chain)
