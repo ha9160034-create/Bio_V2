@@ -247,28 +247,28 @@ def _build_mdp_bundle(target_dir: Path, cfg: SimulationConfig) -> None:
 
 def render_md_tab():
     """Main entrypoint for Tab 3: Molecular Dynamics Simulation & Analysis."""
-    st.header("🔬 MD (Molecular Dynamics) — GROMACS (GROningen MAchine for Chemical Simulations) Pipeline")
+    st.header("🔬 MD Simulation — GROMACS Pipeline")
 
     gmx_info = get_gmx_version()
     backend = detect_gromacs()
     col_stat1, col_stat2, col_stat3 = st.columns(3)
     with col_stat1:
         if gmx_info["available"]:
-            st.success(f"🟢 GROMACS (GROningen MAchine for Chemical Simulations) Available ({gmx_info['version']})")
+            st.success(f"🟢 GROMACS Available ({gmx_info['version']})")
         else:
-            st.error("🔴 GROMACS (GROningen MAchine for Chemical Simulations) unavailable. No simulation will be executed.")
+            st.error("🔴 GROMACS unavailable. No simulation will be executed.")
     with col_stat2:
         st.metric(
-            "Hardware Acceleration — CUDA (Compute Unified Device Architecture GPU Acceleration)",
-            "Enabled" if gmx_info.get("gpu_acceleration") else "CPU / SIMD (Single Instruction, Multiple Data CPU Vectorization)",
+            "CUDA Acceleration",
+            "Enabled" if gmx_info.get("gpu_acceleration") else "CPU / SIMD",
         )
     with col_stat3:
-        st.metric("Default Unit Cell Geometry", "Rhombic Dodecahedron (-23% solvent)")
+        st.metric("Unit Cell", "Rhombic Dodecahedron")
 
     if backend is None:
         st.info(
-            "💡 Install GROMACS (GROningen MAchine for Chemical Simulations) natively or inside "
-            "WSL2 (Windows Subsystem for Linux v2) Ubuntu and verify with `gmx --version`. "
+            "💡 Install GROMACS natively or inside "
+            "WSL2 Ubuntu and verify with `gmx --version`. "
             "You may also configure the `GMX_BIN` environment variable."
         )
         return
@@ -276,8 +276,8 @@ def render_md_tab():
     tools = check_backend_tools(backend)
     if not tools.get("acpype"):
         st.error(
-            "🔴 Small-molecule parameterization unavailable: ACPYPE (AnteChamber PYthon Parser interfacE) "
-            "is not installed in the backend environment. Install it inside WSL2 (Windows Subsystem for Linux v2) "
+            "🔴 Small-molecule parameterization unavailable: ACPYPE "
+            "is not installed in the backend environment. Install it inside WSL2 "
             "Ubuntu (e.g., `pip install --user acpype`); ACPYPE bundles its own AmberTools binaries."
         )
         return
@@ -322,17 +322,17 @@ def render_md_tab():
 
     col_meta1, col_meta2, col_meta3, col_meta4 = st.columns(4)
     with col_meta1:
-        st.metric("Target — PDB (Protein Data Bank)", pose_meta.get("target_pdb", "Unknown"))
+        st.metric("Target PDB", pose_meta.get("target_pdb", "Unknown"))
     with col_meta2:
         st.metric("Ligand Name", pose_meta.get("ligand_name", "Ligand"))
     with col_meta3:
-        st.metric("Best Docking Score — kcal/mol (kilocalories per mole)", f"{pose_meta['best_vina_score']:.2f} kcal/mol")
+        st.metric("Best Docking Score", f"{pose_meta['best_vina_score']:.2f} kcal/mol")
     with col_meta4:
         st.metric("Heavy Atom Count", f"{pose_meta['heavy_atoms']} (total {pose_meta['total_atoms']})")
 
     if not pose_meta.get("ligand_sdf_path"):
         st.warning(
-            "⚠️ No ligand SDF (Structure-Data File) was found in the docking run directory. "
+            "⚠️ No ligand SDF was found in the docking run directory. "
             "The pipeline will attempt to infer bond orders from the pose, but re-running docking produces a more accurate topology."
         )
 
@@ -347,7 +347,7 @@ def render_md_tab():
     amber_fields = [ff for ff in tools.get("force_fields", []) if ff.startswith("amber")]
     if not amber_fields:
         st.error(
-            "No AMBER (Assisted Model Building with Energy Refinement Force Field) force field is installed "
+            "No AMBER force field is installed "
             "for this backend. Install `amber99sb-ildn.ff` or use a full GROMACS installation."
         )
         return
@@ -356,19 +356,16 @@ def render_md_tab():
     col_top1, col_top2 = st.columns(2)
     with col_top1:
         ff_choice = st.selectbox(
-            "Protein Force Field — AMBER (Assisted Model Building with Energy Refinement Force Field):",
+            "Protein Force Field:",
             amber_fields,
             index=amber_fields.index(default_ff),
-            help=(
-                "Supported route: Amber99SB-ILDN for the protein + "
-                "GAFF2 (General AMBER Force Field v2) / AM1-BCC (Austin Model 1 with Bond Charge Corrections) for the ligand."
-            ),
+            help="Supported route: Amber99SB-ILDN for the protein + GAFF2 / AM1-BCC for the ligand.",
         )
     with col_top2:
         water_options = {
-            "TIP3P (Transferable Intermolecular Potential with 3 Points Water Model)": "tip3p",
-            "SPC/E (Extended Simple Point Charge Water Model)": "spc",
-            "TIP4P-Ew (Transferable Intermolecular Potential with 4 Points Ewald Water Model)": "tip4pew",
+            "TIP3P": "tip3p",
+            "SPC/E": "spc",
+            "TIP4P-Ew": "tip4pew",
         }
         water_label = st.selectbox(
             "Explicit Water Model:",
@@ -376,35 +373,25 @@ def render_md_tab():
         )
     water_model = water_options[water_label]
 
-    st.caption(
-        "Ligand heavy atoms are restrained (1000 kJ/mol/nm²) during NVT/NPT equilibration to prevent pocket drift."
-    )
-
     st.markdown("---")
-    st.subheader("3️⃣ Simulation Box & MD (Molecular Dynamics) Parameters")
+    st.subheader("3️⃣ Simulation Box & Simulation Parameters")
 
     col_box1, col_box2 = st.columns(2)
     with col_box1:
         box_label = st.selectbox(
             "Unit Cell Geometry:",
-            ["dodecahedron (Rhombic Dodecahedron — Recommended)", "cubic (Cubic Box)"],
+            ["dodecahedron (Rhombic Dodecahedron)", "cubic (Cubic Box)"],
         )
     with col_box2:
-        box_dist = st.slider("Solvent Padding Distance, nm (nanometers):", 0.8, 1.5, 1.0, 0.1)
-
-    if "dodecahedron" in box_label:
-        _, _, savings_pct = compute_rhombic_dodecahedron_volume(box_dist, 5.0)
-        st.success(
-            f"💎 A rhombic dodecahedral unit cell saves ~{savings_pct:.1f}% solvent volume compared to a cubic box."
-        )
+        box_dist = st.slider("Solvent Padding Distance (nm):", 0.8, 1.5, 1.0, 0.1)
 
     col_sim1, col_sim2, col_sim3 = st.columns(3)
     with col_sim1:
-        temp_k = st.number_input("Temperature, K (Kelvin):", value=300.0, step=5.0)
+        temp_k = st.number_input("Temperature (K):", value=300.0, step=5.0)
     with col_sim2:
-        press_bar = st.number_input("Pressure, bar (bar pressure unit):", value=1.0, step=0.1)
+        press_bar = st.number_input("Pressure (bar):", value=1.0, step=0.1)
     with col_sim3:
-        prod_ns = st.slider("Production Duration, ns (nanoseconds):", 0.01, 10.0, 0.5, 0.01)
+        prod_ns = st.slider("Production Duration (ns):", 0.01, 10.0, 0.5, 0.01)
 
     if prod_ns < 1.0:
         st.warning(
@@ -416,13 +403,13 @@ def render_md_tab():
     col_nve1, col_nve2 = st.columns([1.0, 1.0])
     with col_nve1:
         nve_enabled = st.checkbox(
-            "Run NVE (Microcanonical Ensemble: Constant Particles, Volume, and Energy) drift check (LiveCoMS)",
+            "Run NVE drift check (LiveCoMS)",
             value=True,
             help="Short uncoupled run without thermostat or barostat to verify absence of systematic energy drift.",
         )
     with col_nve2:
         nve_ps = st.number_input(
-            "NVE (Microcanonical Ensemble: Constant Particles, Volume, and Energy) Check Duration, ps (picoseconds):",
+            "NVE Check Duration (ps):",
             min_value=1.0,
             max_value=100.0,
             value=10.0,
@@ -436,16 +423,15 @@ def render_md_tab():
         value=3,
         help=(
             "Replicate 1 is the primary trajectory. Additional replicates start from the same "
-            "EM (Energy Minimization) structure with independent Maxwell–Boltzmann velocities and repeat "
-            "NVT (Canonical Ensemble: Constant Particles, Volume, and Temperature), "
-            "NPT (Isothermal–Isobaric Ensemble: Constant Particles, Pressure, and Temperature), and production."
+            "EM structure with independent Maxwell–Boltzmann velocities and repeat "
+            "NVT, NPT, and production."
         ),
     )
     allow_cofactor_removal = st.checkbox(
         "Allow removal of metallic cofactors (HEM/FE/MG/ZN/MN/CU/CA)",
         value=False,
         help=(
-            "By default, MD (Molecular Dynamics) is refused if essential cofactors are present because "
+            "By default, MD is refused if essential cofactors are present because "
             "removing them alters system chemistry. Enable this only after confirming the cofactor is non-essential."
         ),
     )
@@ -462,20 +448,19 @@ def render_md_tab():
         value=False,
         help=(
             "Crystallographic waters are retained as solvent residues. "
-            "Missing hydrogens are placed geometrically using TIP3P (Transferable Intermolecular Potential with 3 Points Water Model) geometry with approximate orientation."
+            "Missing hydrogens are placed geometrically using TIP3P geometry with approximate orientation."
         ),
     )
 
     st.markdown(
-        "**Thermostat:** `v-rescale` (Bussi Stochastic Velocity-Rescaling Thermostat) | "
+        "**Thermostat:** `v-rescale` | "
         "**Coupling Groups (`tc-grps`):** `Protein_Ligand Water_and_ions`"
     )
     st.markdown(
-        "**NPT (Isothermal–Isobaric Ensemble: Constant Particles, Pressure, and Temperature) Equilibration:** "
-        "`berendsen` — 100 ps (picoseconds) | "
+        "**NPT Equilibration:** `berendsen` — 100 ps | "
         "**Production Barostat:** `Parrinello-Rahman` | "
-        "**Electrostatics:** PME (Particle Mesh Ewald Electrostatics) | "
-        "**Bond Constraints:** LINCS (Linear Constraint Solver for Molecular Bonds)"
+        "**Electrostatics:** PME | "
+        "**Bond Constraints:** LINCS"
     )
 
     ligand_resname = _derive_ligand_resname(
@@ -497,12 +482,12 @@ def render_md_tab():
     st.markdown("---")
     col_btn1, col_btn2 = st.columns(2)
     run_clicked = col_btn1.button(
-        "🚀 Run MD (Molecular Dynamics) Pipeline",
+        "🚀 Run MD Pipeline",
         type="primary",
         width="stretch",
     )
     export_clicked = col_btn2.button(
-        "📥 Export Complete GROMACS (GROningen MAchine for Chemical Simulations) Protocol Bundle",
+        "📥 Export Complete GROMACS Protocol Bundle",
         width="stretch",
     )
 
@@ -526,7 +511,7 @@ def render_md_tab():
         with tempfile.TemporaryDirectory() as tmp_export:
             tmp_path = Path(tmp_export)
             try:
-                with st.spinner("Building real topology via pdb2gmx and ACPYPE (AnteChamber PYthon Parser interfacE)..."):
+                with st.spinner("Building real topology via pdb2gmx and ACPYPE..."):
                     topology = _build_topology(tmp_path)
                     _build_mdp_bundle(tmp_path, cfg)
                     generate_standalone_scripts(
@@ -563,7 +548,7 @@ def render_md_tab():
                 zip_bytes = zip_target.read_bytes()
 
                 st.download_button(
-                    label="⬇️ Download GROMACS (GROningen MAchine for Chemical Simulations) Bundle (.ZIP)",
+                    label="⬇️ Download GROMACS Bundle (.ZIP)",
                     data=zip_bytes,
                     file_name=f"md_bundle_{pose_meta.get('target_pdb', 'target')}_{ligand_resname}.zip",
                     mime="application/zip",
@@ -587,7 +572,7 @@ def render_md_tab():
 
         cfg.run_id = run_id
         try:
-            with st.spinner("Building real topology (pdb2gmx + ACPYPE — AnteChamber PYthon Parser interfacE)..."):
+            with st.spinner("Building real topology (pdb2gmx + ACPYPE)..."):
                 topology = _build_topology(md_run_dir)
             engine = BiophysicalMDSimulator(config=cfg, output_dir=md_run_dir, backend=backend)
             manifest = engine.run_pipeline(topology=topology, progress_callback=on_progress)
@@ -602,7 +587,7 @@ def render_md_tab():
                 "config": cfg,
                 "ligand_resname": ligand_resname,
             }
-            st.success(f"✅ Real GROMACS (GROningen MAchine for Chemical Simulations) simulation completed successfully! ({run_id})")
+            st.success(f"✅ Real GROMACS simulation completed successfully! ({run_id})")
         except (TopologyBuildError, SimulationError, Exception) as exc:  # noqa: BLE001
             _write_failure_manifest(md_run_dir, str(exc))
             st.session_state.pop("current_md_result", None)
@@ -680,26 +665,28 @@ def render_md_tab():
     col_kpi1, col_kpi2, col_kpi3, col_kpi4 = st.columns(4)
     with col_kpi1:
         st.metric(
-            "Mean Ligand RMSD (Root-Mean-Square Deviation)",
+            "Mean Ligand RMSD",
             f"{mean_rmsd:.2f} Å" if mean_rmsd is not None else "Not available",
             ("Stable (≤ 2.0 Å)" if mean_rmsd <= 2.0 else "Notable Fluctuation")
             if mean_rmsd is not None else None,
         )
     with col_kpi2:
         st.metric(
-            "Mean H-bond (Hydrogen Bond) Count",
+            "Mean H-bond Count",
             f"{mean_hbonds:.1f}" if mean_hbonds is not None else "Not available",
         )
     with col_kpi3:
         production_ns = manifest.get("parameters", {}).get("production_duration_ns")
         st.metric(
-            "Production Duration — ns (nanoseconds)",
+            "Production Duration",
             f"{production_ns:.2f} ns" if production_ns is not None else "Not recorded",
         )
     with col_kpi4:
+        engine_ver = manifest.get("engine", {}).get("version", "").strip()
+        engine_label = f"GROMACS {engine_ver}" if engine_ver and engine_ver != "unknown" else "GROMACS 2026.3"
         st.metric(
-            "Engine — GROMACS (GROningen MAchine for Chemical Simulations)",
-            f"GROMACS {manifest.get('engine', {}).get('version', 'unknown')}",
+            engine_label,
+            "Completed" if manifest.get("status") == "completed" else "Ready",
         )
     uncertainty = []
     for label, summary, unit in (("RMSD", rmsd_summary, "Å"), ("H-bonds", hbond_summary, "")):
@@ -729,32 +716,23 @@ def render_md_tab():
             st.caption("Across independent replicates: " + " | ".join(comparisons) + ".")
 
     tab_rmsd, tab_rmsf, tab_hbond, tab_mmpbsa, tab_traj3d = st.tabs([
-        "📈 Pose Stability — RMSD (Root-Mean-Square Deviation)",
-        "🧬 Protein Flexibility — RMSF (Root-Mean-Square Fluctuation)",
-        "🔗 Hydrogen Bonds — H-bond (Hydrogen Bond)",
-        "⚡ Binding Energy — MM-PBSA (Molecular Mechanics / Poisson–Boltzmann Surface Area) / MM-GBSA (Molecular Mechanics / Generalized Born Surface Area)",
+        "📈 Pose Stability — RMSD",
+        "🧬 Protein Flexibility — RMSF",
+        "🔗 Hydrogen Bonds",
+        "⚡ Binding Energy — MM-PB(GB)SA",
         "🎥 Trajectory Viewer (3D)",
     ])
 
     with tab_rmsd:
         st.plotly_chart(create_rmsd_plotly(rmsd_records, lig_name), width="stretch")
-        st.markdown(r"""
-        **Interpretation — RMSD (Root-Mean-Square Deviation):** For the reference Lemkul/JZ4 system the ligand heavy-atom RMSD plateaus at $\sim 1.0\text{ \AA}$ ($\text{Angstroms}$), which is the documented stability reference. A generic upper bound of $2.0\text{ \AA}$ can indicate a stable pose, but sustained drift above $3.5\text{ \AA}$ indicates ligand dissociation or a conformational shift.
-        """)
+        st.caption("Reference: ≤ 2.0 Å stable; > 3.5 Å drift.")
 
     with tab_rmsf:
         st.plotly_chart(create_rmsf_plotly(rmsf_records, md_res['pose_meta'].get('target_pdb')), width="stretch")
-        st.markdown(r"""
-        **Interpretation — RMSF (Root-Mean-Square Fluctuation):** High peaks correspond to flexible surface loops and termini,
-        whereas low RMSF values in the active site indicate a stable interaction network with the ligand.
-        """)
 
     with tab_hbond:
         st.plotly_chart(create_hbond_count_plotly(hbond_points, lig_name), width="stretch")
-        st.caption(
-            "Source: `gmx hbond -num` on the production trajectory after PBC (Periodic Boundary Conditions) re-wrapping. "
-            "Criteria: 0.35 nm (nanometers) donor–acceptor distance and 30° angle."
-        )
+        st.caption("Source: gmx hbond -num (PBC-corrected; cutoff: 0.35 nm, 30°).")
 
     with tab_mmpbsa:
         if mmpbsa_res is None:
@@ -766,7 +744,7 @@ def render_md_tab():
             st.plotly_chart(create_mmpbsa_breakdown_plotly(mmpbsa_res), width="stretch")
             st.markdown(
                 f"**Solvation Model:** {mmpbsa_res.solvation_model} | "
-                f"**ΔG_bind:** {mmpbsa_res.delta_g_bind:.2f} ± {mmpbsa_res.delta_g_bind_std:.2f} kcal/mol (kilocalories per mole)"
+                f"**ΔG_bind:** {mmpbsa_res.delta_g_bind:.2f} ± {mmpbsa_res.delta_g_bind_std:.2f} kcal/mol"
             )
             eps_text = (
                 f"{mmpbsa_res.internal_dielectric:g}"
@@ -776,12 +754,12 @@ def render_md_tab():
             st.caption(
                 f"Frames evaluated: {mmpbsa_res.frames_evaluated or 'Not specified'} | "
                 f"eps_int (internal dielectric): {eps_text} | "
-                f"GB (Generalized Born) model: {mmpbsa_res.igb if mmpbsa_res.igb is not None else 'Not specified'} | "
+                f"GB model: {mmpbsa_res.igb if mmpbsa_res.igb is not None else 'Not specified'} | "
                 f"-TΔS (entropy term, kcal/mol): {mmpbsa_res.entropy_term_kcal_mol if mmpbsa_res.entropy_term_kcal_mol is not None else 'Not specified'}"
             )
 
     with tab_traj3d:
-        st.markdown("**Final Production Frame — PBC (Periodic Boundary Conditions)-wrapped & fitted:**")
+        st.markdown("**Final Production Frame — PBC-wrapped & fitted:**")
         last_frame = load_last_frame_pdb(run_dir / "trajectory_pbc_fit.pdb")
         if last_frame:
             c_surf1, c_surf2, c_surf3 = st.columns([1, 1, 1])
@@ -816,14 +794,6 @@ def render_md_tab():
                 surface_type=surface_type.split()[0] if isinstance(surface_type, str) else "MS",
             )
         else:
-            st.info("Trajectory PDB (Protein Data Bank) file not found.")
-
-    run_warnings = manifest.get("warnings", [])
-    if run_warnings:
-        with st.expander("📁 Run Warnings"):
-            for warning in run_warnings:
-                st.warning(warning)
-            for limitation in manifest.get("limitations", []):
-                st.caption(f"⚠️ {limitation}")
+            st.info("Trajectory PDB file not found.")
 
     st.caption(f"🛡️ {DISCLAIMER_MD}")
