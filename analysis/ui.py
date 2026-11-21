@@ -148,9 +148,7 @@ def protein_ui_panel(p):
 
 def render_analysis_tab():
     """Render the complete Structural Analysis & Mutation Comparison tab."""
-    reason = st.session_state.pop("last_result_invalidation_reason", None)
-    if reason:
-        st.info(f"Previous results cleared: {reason}")
+    st.session_state.pop("last_result_invalidation_reason", None)
 
     # ── Sidebar Settings ──
     st.sidebar.header("⚙️ Analysis & Settings")
