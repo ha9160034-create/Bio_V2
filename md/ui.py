@@ -7,6 +7,7 @@ import json
 import shutil
 import zipfile
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 
@@ -130,7 +131,7 @@ def scan_available_docking_runs() -> List[Dict[str, Any]]:
             try:
                 m = json.loads(manifest_file.read_text(encoding="utf-8"))
                 target_id = m.get("target", {}).get("pdb_id", target_id)
-                lig_name = m.get("ligand", {}).get("name", lig_name)
+                lig_name = m.get("ligand", {}).get("ligand_name") or m.get("ligand", {}).get("name", lig_name)
                 top_score = m.get("results", {}).get("top_score")
                 val_stat = m.get("status", val_stat)
             except Exception:
@@ -290,29 +291,62 @@ def render_md_tab():
 
     run_options: List[str] = []
     run_dir_map: Dict[str, Path] = {}
+    run_labels: Dict[str, str] = {}
     if current_docking and "run_dir" in current_docking:
         cid = current_docking.get("run_id", "active_session")
-        label = (
-            f"Active Session ({cid}) — {current_docking.get('ligand_name', 'Ligand')} "
-            f"⚯ {current_docking.get('target_id', 'Target')}"
-        )
-        run_options.append(label)
-        run_dir_map[label] = Path(current_docking["run_dir"])
+        opt_key = f"active::{cid}" if any(r["run_id"] == cid for r in saved_runs) else str(cid)
+        lig = current_docking.get("ligand_name") or current_docking.get("ligand", {}).get("ligand_name") or "Ligand"
+        pdb = current_docking.get("target_id") or current_docking.get("target", {}).get("pdb_id") or "Target"
+        score = current_docking.get("top_score")
+        if score is None:
+            score = current_docking.get("best_vina_score")
+        if score is None and current_docking.get("poses"):
+            first_pose = current_docking["poses"][0]
+            score = getattr(first_pose, "score", None) or (first_pose.get("score") if isinstance(first_pose, dict) else None)
+        score_part = f" ({score:.2f} kcal/mol)" if score is not None else ""
+        label = f"Active Session — {lig} × {pdb}{score_part}"
+        run_options.append(opt_key)
+        run_dir_map[opt_key] = Path(current_docking["run_dir"])
+        run_labels[opt_key] = label
 
     for r in saved_runs:
-        score_str = f"[{r['top_score']:.2f} kcal/mol]" if r["top_score"] is not None else ""
-        label = f"{r['run_id']} — {r['ligand_name']} ⚯ {r['target_id']} {score_str}"
-        if label not in run_dir_map:
-            run_options.append(label)
-            run_dir_map[label] = r["dir"]
+        opt_key = str(r["run_id"])
+        if opt_key in run_dir_map:
+            continue
+        score_part = f" [{r['top_score']:.2f} kcal/mol]" if r.get("top_score") is not None else ""
+        match = re.search(r"(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})", opt_key)
+        if match:
+            ts = f"{match.group(1)}-{match.group(2)}-{match.group(3)} {match.group(4)}:{match.group(5)}"
+        else:
+            try:
+                ts = datetime.fromtimestamp(r["dir"].stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                ts = ""
+        ts_part = f" · {ts}" if ts else ""
+
+        lower_id = opt_key.lower()
+        if "matched_mutant" in lower_id:
+            label = f"Mutant ({r['target_id']}) — {r['ligand_name']}{score_part}{ts_part}"
+        elif "matched_healthy" in lower_id:
+            label = f"Healthy ({r['target_id']}) — {r['ligand_name']}{score_part}{ts_part}"
+        else:
+            label = f"{r['ligand_name']} × {r['target_id']}{score_part}{ts_part}"
+
+        run_options.append(opt_key)
+        run_dir_map[opt_key] = r["dir"]
+        run_labels[opt_key] = label
 
     if not run_options:
         st.warning("⚠️ No completed docking runs were found in `docking_runs/` or in the active session.")
         st.info("💡 Run molecular docking first in Tab 2 ('💊 Tab 2: Molecular Docking Simulation (AutoDock Vina)'), then return here. No synthetic data will be generated.")
         return
 
-    selected_run_label = st.selectbox("Select Source Docking Run:", run_options)
-    selected_run_dir = run_dir_map[selected_run_label]
+    selected_run_id = st.selectbox(
+        "Select Source Docking Run:",
+        run_options,
+        format_func=lambda opt: run_labels.get(opt, str(opt)),
+    )
+    selected_run_dir = run_dir_map[selected_run_id]
 
     try:
         rec_path, best_pose, pose_meta = extract_best_pose_from_docking_run(selected_run_dir)
