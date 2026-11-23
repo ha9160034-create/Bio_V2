@@ -16,3 +16,6 @@ streamlit
 plotly
 py3Dmol
 requests
+fpdf2
+Pillow
+
