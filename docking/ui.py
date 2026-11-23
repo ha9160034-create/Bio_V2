@@ -8,6 +8,9 @@ import streamlit as st
 import pandas as pd
 import py3Dmol
 
+from components.mol3d_viewer import render_3d_viewer
+from reporting.pdf_generator import build_docking_pdf
+
 from docking.models import GridBox
 from docking.storage import (
     create_run_directory,
@@ -204,6 +207,7 @@ def sync_target_binding_site_state(current_target_identity: str, session_state_d
         )
         session_state_dict["dock_pocket_padding"] = 8.0
         session_state_dict["dock_previous_target_identity"] = current_target_identity
+        session_state_dict["docking_screenshots"] = []
         return True
     return False
 
@@ -243,6 +247,9 @@ def lowest_vina_score(poses) -> float | None:
     return min(scores) if scores else None
 
 def render_docking_tab():
+    if "docking_screenshots" not in st.session_state:
+        st.session_state["docking_screenshots"] = []
+
     reason = st.session_state.pop("last_result_invalidation_reason", None)
     if reason:
         st.info(
@@ -643,6 +650,7 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
 
     if st.button("🚀 Run Docking", type="primary"):
         st.session_state.pop("current_docking_result", None)
+        st.session_state["docking_screenshots"] = []
         if site_mode == "co_crystal_ligand" and not ref_ligand_code:
             st.error("Please enter a reference ligand code to define the binding site.")
             return
@@ -1316,7 +1324,12 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                     grid_box=res.get("grid"),
                     show_grid_box=dock_show_grid
                 )
-                st.iframe(view_html, height=520)
+                render_3d_viewer(
+                    view_html,
+                    height=520,
+                    key='docking_3d',
+                    screenshots_key='docking_screenshots',
+                )
 
             with col_vint:
                 with st.container(border=True):
@@ -1382,6 +1395,42 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                     for cl in res["clusters"]
                 ]
                 st.dataframe(pd.DataFrame(cl_data), use_container_width=True, hide_index=True)
+
+        # ── Comprehensive PDF Report Generation ──
+        st.divider()
+        docking_report_data = {
+            "target_id": res.get("target_id"),
+            "ligand_name": res.get("ligand_name"),
+            "workflow_mode": "Advanced" if is_advanced_mode else "Quick",
+            "validation_status": val_stat,
+            "validation_details": val_det.get("summary") if isinstance(val_det, dict) else (str(val_det) if val_det else None),
+            "lowest_vina_score": best_score,
+            "poses": [
+                {
+                    "rank": p.rank,
+                    "score": p.score,
+                    "rmsd_lb": p.rmsd_lb,
+                    "rmsd_ub": p.rmsd_ub,
+                }
+                for p in res.get("poses", [])
+            ],
+            "clusters": res.get("clusters", []),
+            "properties": d_props or {},
+        }
+        screenshots = st.session_state.get("docking_screenshots", [])
+        try:
+            pdf_bytes = build_docking_pdf(docking_report_data, screenshots=screenshots)
+            t_clean = str(res.get("target_id", "target")).replace(" ", "_")
+            l_clean = str(res.get("ligand_name", "ligand")).replace(" ", "_")
+            st.download_button(
+                '📄 Download PDF Report',
+                data=pdf_bytes,
+                file_name=f"docking_report_{t_clean}_{l_clean}.pdf",
+                mime='application/pdf',
+                key="dl_docking_pdf",
+            )
+        except Exception as e:
+            st.warning(f"Could not generate PDF report: {e}")
 
 
 
@@ -1761,6 +1810,7 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
         )
 
         if st.button(btn_label, type="primary", key="btn_run_comp_main"):
+            st.session_state["docking_screenshots"] = []
             if workflow_mode == "matched_variant":
                 st.session_state.pop("matched_comparison_result", None)
                 st.session_state.pop("exploratory_cross_result", None)
