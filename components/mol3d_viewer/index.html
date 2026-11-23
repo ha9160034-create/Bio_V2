@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mol3D Viewer</title>
+  <style>
+    html, body {
+      margin: 0 !important;
+      padding: 0 !important;
+      width: 100% !important;
+      height: 100% !important;
+      overflow: hidden !important;
+      background-color: transparent;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    #viewer-wrapper {
+      position: relative !important;
+      width: 100% !important;
+      height: 100% !important;
+      overflow: hidden !important;
+    }
+
+    #viewer-container {
+      width: 100% !important;
+      height: 100% !important;
+      overflow: hidden !important;
+    }
+
+    div[id^='3dmolviewer'] {
+      width: 100% !important;
+      height: 100% !important;
+      overflow: hidden !important;
+    }
+
+    canvas {
+      display: block;
+    }
+
+    /* Hover screenshot button */
+    #screenshot-btn {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      z-index: 9999;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease;
+      background: rgba(15, 23, 42, 0.85);
+      color: #ffffff;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      border-radius: 6px;
+      padding: 6px 14px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      user-select: none;
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+    }
+
+    #screenshot-btn:hover {
+      background: rgba(30, 41, 59, 0.95);
+      border-color: rgba(255, 255, 255, 0.45);
+    }
+
+    #screenshot-btn:active {
+      transform: scale(0.97);
+    }
+
+    #viewer-wrapper:hover #screenshot-btn {
+      opacity: 1;
+      pointer-events: auto;
+    }
+  </style>
+</head>
+<body>
+  <div id="viewer-wrapper">
+    <button id="screenshot-btn" type="button" title="Capture 3D View Angle">📸 Screenshot</button>
+    <div id="viewer-container"></div>
+  </div>
+
+  <script>
+    const Streamlit = {
+      setComponentReady: function() {
+        window.parent.postMessage({ isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1 }, "*");
+      },
+      setFrameHeight: function(height) {
+        window.parent.postMessage({ isStreamlitMessage: true, type: "streamlit:setFrameHeight", height: height }, "*");
+      },
+      setComponentValue: function(value) {
+        window.parent.postMessage({ isStreamlitMessage: true, type: "streamlit:setComponentValue", value: value }, "*");
+      }
+    };
+
+    function findViewer() {
+      // 1. Check window.$3Dmol.viewers
+      if (window.$3Dmol && window.$3Dmol.viewers) {
+        const viewers = Object.values(window.$3Dmol.viewers);
+        if (viewers.length > 0) {
+          const v = viewers[viewers.length - 1];
+          if (v && (typeof v.render === "function" || typeof v.pngURI === "function")) {
+            return v;
+          }
+        }
+      }
+
+      // 2. Derive variable name from container div id (py3Dmol convention: id='3dmolviewer_123', var='viewer_123')
+      const container = document.getElementById("viewer-container");
+      if (container) {
+        const viewerDiv = container.querySelector("div[id^='3dmolviewer']");
+        if (viewerDiv) {
+          const varName = viewerDiv.id.replace("3dmolviewer_", "viewer_");
+          if (window[varName] && (typeof window[varName].render === "function" || typeof window[varName].pngURI === "function")) {
+            return window[varName];
+          }
+        }
+      }
+
+      // 3. Scan window properties for viewer instances
+      try {
+        for (const key of Object.getOwnPropertyNames(window)) {
+          if (key.startsWith("viewer_") || key === "viewer" || key === "_viewer") {
+            const candidate = window[key];
+            if (candidate && (typeof candidate.render === "function" || typeof candidate.pngURI === "function")) {
+              return candidate;
+            }
+          }
+        }
+      } catch (e) {}
+
+      return null;
+    }
+
+    function captureScreenshot() {
+      const btn = document.getElementById("screenshot-btn");
+      const origText = btn ? btn.innerHTML : "📸 Screenshot";
+
+      let dataUrl = null;
+      const viewer = findViewer();
+
+      if (viewer) {
+        try {
+          if (typeof viewer.render === "function") {
+            viewer.render();
+          }
+          if (typeof viewer.pngURI === "function") {
+            dataUrl = viewer.pngURI();
+          }
+        } catch (err) {
+          console.warn("viewer.pngURI error:", err);
+        }
+      }
+
+      // Fallback: direct WebGL canvas capture after render
+      if (!dataUrl || dataUrl === "data:,") {
+        const canvas = document.querySelector("#viewer-wrapper canvas") || document.querySelector("canvas");
+        if (canvas) {
+          try {
+            if (viewer && typeof viewer.render === "function") {
+              viewer.render();
+            }
+            dataUrl = canvas.toDataURL("image/png");
+          } catch (err) {
+            console.warn("canvas.toDataURL error:", err);
+          }
+        }
+      }
+
+      if (dataUrl && dataUrl.startsWith("data:image/png")) {
+        Streamlit.setComponentValue({
+          image: dataUrl,
+          ts: Date.now()
+        });
+        if (btn) {
+          btn.innerHTML = "✓ Captured!";
+          setTimeout(() => {
+            btn.innerHTML = origText;
+          }, 1200);
+        }
+      } else {
+        console.error("Unable to capture WebGL canvas screenshot");
+        if (btn) {
+          btn.innerHTML = "⚠️ Capture Failed";
+          setTimeout(() => {
+            btn.innerHTML = origText;
+          }, 1500);
+        }
+      }
+    }
+
+    document.getElementById("screenshot-btn").addEventListener("click", captureScreenshot);
+
+    let lastHtml = null;
+
+    function executeScripts(container) {
+      const scripts = Array.from(container.querySelectorAll("script"));
+      for (const oldScript of scripts) {
+        const newScript = document.createElement("script");
+        for (let i = 0; i < oldScript.attributes.length; i++) {
+          const attr = oldScript.attributes[i];
+          newScript.setAttribute(attr.name, attr.value);
+        }
+        if (oldScript.src) {
+          newScript.src = oldScript.src;
+        } else {
+          newScript.textContent = oldScript.textContent;
+        }
+        oldScript.parentNode.replaceChild(newScript, oldScript);
+      }
+    }
+
+    function onRender(event) {
+      if (!event.data || event.data.type !== "streamlit:render") {
+        return;
+      }
+      const args = event.data.args || {};
+      const height = args.height || 500;
+      Streamlit.setFrameHeight(height);
+
+      const viewerHtml = args.viewer_html;
+      if (viewerHtml && viewerHtml !== lastHtml) {
+        lastHtml = viewerHtml;
+        const container = document.getElementById("viewer-container");
+        container.innerHTML = viewerHtml;
+        executeScripts(container);
+      }
+    }
+
+    window.addEventListener("message", onRender);
+    Streamlit.setComponentReady();
+  </script>
+</body>
+</html>
