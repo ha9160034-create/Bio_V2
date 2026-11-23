@@ -4,6 +4,8 @@ import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
 
+from components.mol3d_viewer import render_3d_viewer
+from reporting.pdf_generator import build_analysis_pdf
 from analysis.constants import AA_3TO1
 from analysis.fetch import fetch_deposited_pdb, fetch_biological_assembly, load_mutation_db
 from analysis.structure import (
@@ -27,7 +29,8 @@ def initialize_session_state():
         'h_id': '', 'm_id': '',
         'h_results': None, 'm_results': None,
         'h_selected_chain': None, 'm_selected_chain': None,
-        'h_id_in_val': '', 'm_id_in_val': ''
+        'h_id_in_val': '', 'm_id_in_val': '',
+        'analysis_screenshots': [],
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -49,6 +52,7 @@ def invalidate_dependent_results(reason: str) -> None:
         "cross_r1_pocket_input", "cross_r2_pocket_input",
         "chk_comp_override_pocket",
         "comp_ref_lig_resname", "comp_ref_lig_chain", "comp_ref_lig_seq",
+        "analysis_screenshots",
     }
     for key in keys:
         st.session_state.pop(key, None)
@@ -337,7 +341,13 @@ def render_analysis_tab():
                 zoom_to_mutations=zoom_mutations, focus_mut=focus_mut,
                 show_ligands=show_ligands, ligand_style=ligand_style
             )
-            components.html(view_html, height=450, scrolling=False)
+            viewer_key = 'analysis_3d' if (prefix == 'h' or len(structures) <= 1) else f"analysis_3d_{prefix}"
+            render_3d_viewer(
+                view_html,
+                height=450,
+                key=viewer_key,
+                screenshots_key='analysis_screenshots',
+            )
 
             try:
                 total_res = sum(1 for r in struct[0].get_residues() if r.id[0] == ' ')
@@ -508,3 +518,43 @@ def render_analysis_tab():
                 score_c4.metric("Gaps & Indels", f"{indels_count}")
 
             st.code(alignment_data['text'], language='text')
+
+    # ── Step 6: Comprehensive PDF Report Generation ──
+    has_results = bool(
+        alignment_data
+        or st.session_state.get('h_results')
+        or st.session_state.get('m_results')
+    )
+    if has_results:
+        st.divider()
+        report_data = {
+            "wt_id": st.session_state.get("h_id") or "WT",
+            "wt_chain": h_chain or "A",
+            "mt_id": st.session_state.get("m_id") or "MT",
+            "mt_chain": m_chain or "A",
+            "coordinate_mode": current_coordinate_mode,
+            "alignment": {
+                "score": alignment_data.get("score") if alignment_data else None,
+                "identity_pct": identity_pct if alignment_data else None,
+                "mutations": mutations_count if alignment_data else None,
+                "gaps": indels_count if alignment_data else None,
+                "ca_rmsd": ca_rmsd if alignment_data else None,
+                "text": alignment_data.get("text", "") if alignment_data else "",
+            } if alignment_data else None,
+            "comparison_rows": rows if (alignment_data and 'rows' in locals() and rows) else None,
+            "results": st.session_state.get("h_results") or st.session_state.get("m_results"),
+        }
+        screenshots = st.session_state.get("analysis_screenshots", [])
+        try:
+            pdf_bytes = build_analysis_pdf(report_data, screenshots=screenshots)
+            h_name = str(st.session_state.get('h_id') or 'WT').replace(" ", "_")
+            m_name = str(st.session_state.get('m_id') or 'MT').replace(" ", "_")
+            st.download_button(
+                '📄 Download PDF Report',
+                data=pdf_bytes,
+                file_name=f"analysis_report_{h_name}_{m_name}.pdf",
+                mime='application/pdf',
+                key='dl_analysis_pdf',
+            )
+        except Exception as e:
+            st.warning(f"Could not generate PDF report: {e}")

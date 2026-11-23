@@ -15,6 +15,9 @@ import streamlit as st
 import streamlit.components.v1 as components
 import py3Dmol
 
+from components.mol3d_viewer import render_3d_viewer
+from reporting.pdf_generator import build_md_pdf
+
 from md.engine import detect_gromacs, get_gmx_version, check_backend_tools, generate_standalone_scripts
 from md.topology import (
     TopologyBuildError,
@@ -69,6 +72,8 @@ def render_mol_3d(
     surface_opacity: float = 0.5,
     surface_type: str = "MS",
     surface_color: str = "#ECEFF1",
+    key: Optional[str] = None,
+    screenshots_key: Optional[str] = None,
 ):
     """Render a 3D interactive molecular visualization using py3Dmol."""
     viewer = py3Dmol.view(width="100%", height=height)
@@ -105,7 +110,17 @@ def render_mol_3d(
         "div[id^='3dmolviewer'] { overflow: hidden !important; width: 100% !important; height: 100% !important; }</style>"
     )
     viewer.startjs = style_tag + viewer.startjs
-    components.html(viewer._make_html(), height=height, scrolling=False)
+
+    viewer_html = viewer._make_html()
+    if key or screenshots_key:
+        render_3d_viewer(
+            viewer_html,
+            height=height,
+            key=key or "md_3d",
+            screenshots_key=screenshots_key or "md_screenshots",
+        )
+    else:
+        components.html(viewer_html, height=height, scrolling=False)
 
 
 def scan_available_docking_runs() -> List[Dict[str, Any]]:
@@ -248,6 +263,9 @@ def _build_mdp_bundle(target_dir: Path, cfg: SimulationConfig) -> None:
 
 def render_md_tab():
     """Main entrypoint for Tab 3: Molecular Dynamics Simulation & Analysis."""
+    if "md_screenshots" not in st.session_state:
+        st.session_state["md_screenshots"] = []
+
     st.header("🔬 MD Simulation — GROMACS Pipeline")
 
     gmx_info = get_gmx_version()
@@ -596,6 +614,7 @@ def render_md_tab():
                 st.error(f"Failed to build GROMACS bundle: {exc}")
 
     if run_clicked:
+        st.session_state["md_screenshots"] = []
         run_id, md_run_dir = create_md_run_directory(prefix="md")
         progress_bar = st.progress(0.0)
         status_text = st.empty()
@@ -639,6 +658,10 @@ def render_md_tab():
             choices,
             key="md_saved_run_choice",
         )
+        if "last_loaded_md_run" in st.session_state and st.session_state["last_loaded_md_run"] != selected:
+            st.session_state["md_screenshots"] = []
+        st.session_state["last_loaded_md_run"] = selected
+
         if selected != "Current session":
             md_res = load_saved_md_result(MD_RUNS_DIR / selected)
         else:
@@ -826,8 +849,46 @@ def render_md_tab():
                 show_surface=show_surface,
                 surface_opacity=surface_opacity,
                 surface_type=surface_type.split()[0] if isinstance(surface_type, str) else "MS",
+                key="md_3d",
+                screenshots_key="md_screenshots",
             )
         else:
             st.info("Trajectory PDB file not found.")
+
+    # ── Comprehensive PDF Report Generation ──
+    st.divider()
+    md_report_data = {
+        "target_pdb": md_res.get("pose_meta", {}).get("target_pdb"),
+        "ligand_name": md_res.get("pose_meta", {}).get("ligand_name"),
+        "gromacs_version": engine_label,
+        "run_id": md_res.get("run_id"),
+        "duration_ns": production_ns,
+        "mean_ligand_rmsd": mean_rmsd,
+        "mean_hbond_count": mean_hbonds,
+        "manifest": manifest,
+        "mmpbsa": {
+            "dg_bind": mmpbsa_res.delta_g_bind,
+            "dg_bind_std": mmpbsa_res.delta_g_bind_std,
+            "solvation_model": mmpbsa_res.solvation_model,
+        } if mmpbsa_res else None,
+    }
+    screenshots = st.session_state.get("md_screenshots", [])
+    try:
+        pdf_bytes = build_md_pdf(
+            md_report_data,
+            plots={},
+            screenshots=screenshots,
+        )
+        target_str = str(md_res.get("pose_meta", {}).get("target_pdb", "target")).replace(" ", "_")
+        lig_str = str(md_res.get("pose_meta", {}).get("ligand_name", "ligand")).replace(" ", "_")
+        st.download_button(
+            '📄 Download PDF Report',
+            data=pdf_bytes,
+            file_name=f"md_report_{target_str}_{lig_str}.pdf",
+            mime='application/pdf',
+            key="dl_md_pdf",
+        )
+    except Exception as e:
+        st.warning(f"Could not generate PDF report: {e}")
 
     st.caption(f"🛡️ {DISCLAIMER_MD}")
