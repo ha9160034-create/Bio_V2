@@ -4,7 +4,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
 
-from components.mol3d_viewer import render_3d_viewer
+from components.mol3d_viewer import render_3d_viewer, render_screenshot_gallery
 from reporting.pdf_generator import build_analysis_pdf
 from analysis.constants import AA_3TO1
 from analysis.fetch import fetch_deposited_pdb, fetch_biological_assembly, load_mutation_db
@@ -347,6 +347,7 @@ def render_analysis_tab():
                 height=450,
                 key=viewer_key,
                 screenshots_key='analysis_screenshots',
+                show_gallery=False,
             )
 
             try:
@@ -387,6 +388,9 @@ def render_analysis_tab():
                         'sasa': 'SASA (Å²)'
                     })
                     st.dataframe(df_display, use_container_width=True, hide_index=True)
+
+    # Render unified screenshot gallery across full width below both protein columns
+    render_screenshot_gallery("analysis_screenshots", key_prefix="analysis_unified_gallery")
 
     # ── Step 5: Direct Comparison Between Wild-Type and Mutant ──
     if structures.get('h') and structures.get('m') and h_chain and m_chain:

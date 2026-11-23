@@ -105,6 +105,29 @@ render_3d_viewer('<div>test_mol</div>', key='strip_key', screenshots_key='shots'
             mol3d_viewer.render_3d_viewer("<div>mol</div>", key="k_fail", screenshots_key="s_fail")
             self.assertEqual(st.session_state["s_fail"], [])
 
+    def test_show_gallery_false_and_standalone_gallery(self):
+        """Verify show_gallery=False suppresses in-viewer gallery, and render_screenshot_gallery renders standalone."""
+        script = """
+import streamlit as st
+from components.mol3d_viewer import render_3d_viewer, render_screenshot_gallery
+if 'shots' not in st.session_state:
+    st.session_state['shots'] = ['data:image/png;base64,aaa', 'data:image/png;base64,bbb']
+# Viewer without gallery
+render_3d_viewer('<div>test_mol</div>', key='view_no_gal', screenshots_key='shots', show_gallery=False)
+# Separate unified gallery
+render_screenshot_gallery(screenshots_key='shots', key_prefix='unified')
+"""
+        at = AppTest.from_string(script).run()
+        self.assertEqual(len(at.exception), 0)
+        # Images rendered by standalone gallery
+        self.assertEqual(len(at.image), 2)
+        self.assertEqual(at.image[0].captions, ["Angle 1"])
+        self.assertEqual(at.image[1].captions, ["Angle 2"])
+        # Buttons: 1 Clear All + 2 deletes
+        self.assertEqual(len(at.button), 3)
+        # Clear All button key has prefix 'unified'
+        self.assertIn("unified_clear_all", at.button[0].key)
+
 
 if __name__ == "__main__":
     unittest.main()
